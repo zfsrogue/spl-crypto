@@ -32,6 +32,10 @@ extern "C" {
 #include <sys/types.h>
 #include <sys/crypto/common.h>
 
+
+    //#define ZFS_CRYPTO_VERBOSE
+
+
 typedef long crypto_req_id_t;
 typedef void *crypto_bc_t;
 typedef void *crypto_context_t;
