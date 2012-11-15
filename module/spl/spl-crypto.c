@@ -3,6 +3,20 @@
 
 #include <linux/scatterlist.h>
 #include <linux/crypto.h>
+#include <crypto/scatterwalk.h>
+
+// ZFS_CRYPTO_VERBOSE is set in the crypto/api.h file
+//#define ZFS_CRYPTO_VERBOSE
+
+// With AEAD, we use cipher "ccm(aes)", which does MAC for us, and often crash.
+// Without AEAD, we use blkcipher and call "ctr(aes)" ourselves.
+#define ZFS_USE_AEAD
+#define ZFS_COPYDST
+
+#define ZFS_CIPHER "ccm(aes)"
+
+#define ZFS_BLKCIPHER "ctr(aes)"
+
 
 
 int crypto_mac(crypto_mechanism_t *mech, crypto_data_t *data,
@@ -17,163 +31,13 @@ int crypto_mac(crypto_mechanism_t *mech, crypto_data_t *data,
 
 
 
-int crypto_decryptX(crypto_mechanism_t *mech, crypto_data_t *ciphertext,
-                   crypto_key_t *key, crypto_ctx_template_t tmpl,
-                   crypto_data_t *plaintext, crypto_call_req_t *cr)
-{
-#if _KERNEL
-    unsigned char *src;
-    unsigned char *dst;
-    size_t len = 0;
-    int i;
-
-    if (ciphertext->cd_format != CRYPTO_DATA_RAW) {
-        printk("crypto_decrypt  cd_format is NOT RAW?! %d\n", ciphertext->cd_format);
-        return -1;
-    }
-
-    if (plaintext && plaintext->cd_format != CRYPTO_DATA_RAW) {
-        printk("crypto_decrypt  cd_format is NOT RAW?! %d\n", plaintext->cd_format);
-        return -1;
-    }
-
-    src = (unsigned char *)ciphertext->cd_raw.iov_base;
-    len = (size_t) ciphertext->cd_raw.iov_len;
-
-    if (plaintext && plaintext->cd_raw.iov_base)
-        dst = (unsigned char *)plaintext->cd_raw.iov_base;
-    else
-        dst = src;
-
-    printk("crypto_decrypt (%p -> %p) 0x%04lx\n",
-           src, dst, (unsigned long)len);
-
-    for (i = 0; i < len; i++)
-        //dst[i] = isalpha(src[i]) ? src[i]^0x20 : src[i];
-        dst[i] = src[i];
-
-    // Notify caller.
-    if (cr && cr->cr_callback_func) {
-        printk("   notifying caller\n");
-        cr->cr_callback_func(cr->cr_callback_arg, cr->cr_reqid);
-        return CRYPTO_QUEUED;
-    }
-
-#endif
-    return CRYPTO_SUCCESS;
-}
-
-int crypto_decryptXXX(crypto_mechanism_t *mech, crypto_data_t *ciphertext,
-    crypto_key_t *key, crypto_ctx_template_t tmpl, crypto_data_t *plaintext,
-    crypto_call_req_t *cr)
-{
-#if _KERNEL
-    unsigned char *src;
-    unsigned char *dst;
-    size_t len = 0;
-    int i;
-    unsigned int numiov = 0, curriov = 0, iovlen = 0;
-    uio_t *srcuio = NULL;
-    iovec_t *srciov = NULL;
-
-    // Decrypt, we will get UIO -> RAW
-    printk("crypto_decrypt  ciphertext cd_format %d, plaintext %d\n",
-           ciphertext->cd_format, plaintext->cd_format);
-
-    // DST is always RAW
-    if (plaintext->cd_format != CRYPTO_DATA_RAW) {
-        printk("crypto_decrypt  cd_format is NOT RAW?! %d\n", plaintext->cd_format);
-        return CRYPTO_FAILED;
-    }
-
-    // SRC can be RAW, or UIO
-    if ((plaintext->cd_format == CRYPTO_DATA_UIO) &&
-        (plaintext->cd_uio->uio_segflg == UIO_USERSPACE)) {
-        printk("crypto_decrypt  cipher cd_format is UIO?! segment is %s!!!\n",
-               ciphertext->cd_uio->uio_segflg == UIO_USERSPACE ? "user" : "system");
-        return CRYPTO_FAILED;
-    }
-
-    // We dont support MBLK at all
-    if (plaintext->cd_format == CRYPTO_DATA_MBLK) {
-        printk("crypto_decrypt  cipher cd_format is MBLK?!\n");
-        return CRYPTO_FAILED;
-    }
-
-    // We do not handle callbacks (so far they've not been needed)
-    if (cr != NULL) {
-      printk("crypto_decrypt with callback request not supported\n");
-      return CRYPTO_FAILED;
-    }
-
-    dst = (unsigned char *)plaintext->cd_raw.iov_base;
-    len = (size_t) plaintext->cd_length;
-
-    if (ciphertext && ciphertext->cd_raw.iov_base)
-        src = (unsigned char *)ciphertext->cd_raw.iov_base;
-    else
-        src = dst;
-
-    if (ciphertext->cd_format == CRYPTO_DATA_UIO) {
-      srcuio = ciphertext->cd_uio;
-      numiov = srcuio->uio_iovcnt;
-      curriov = 0;
-      iovlen = 0; // Forces read of first iov.
-      srciov = srcuio->uio_iov;
-      printk("crypto_decrypt: UIO :  with %u iovs: total 0x%04lx/0x%04lx\n",
-             numiov,
-             (unsigned long)len,
-             (unsigned long)plaintext->cd_raw.iov_len);
-    }
-
-    if (numiov == 0) {
-      printk("crypto_decrypt (%p -> %p) 0x%04lx/0x%04lx (offset 0x%04lx: numiov %u)\n",
-	     src, dst,
-             (unsigned long)len,
-             (unsigned long)plaintext->cd_raw.iov_len,
-             (unsigned long)plaintext->cd_offset,
-             numiov);
-    }
-
-    for (i = 0; i < len; i++) {
-
-        if (numiov && !iovlen) { // uses UIO, and ran out of space, move to next
-
-            src = srciov[ curriov ].iov_base;
-            iovlen = srciov[ curriov ].iov_len;
-
-            printk("crypto_decrypt IOV (%p -> %p) curriov %u, iovlen 0x%04lx\n",
-                   src, dst, curriov, (unsigned long)iovlen);
-
-            curriov++; // Ready next.
-            if (curriov >= numiov) { // out of dst space
-                if (i < len) printk("crypto_decrypt ran outof dst space before src i=%d\n", i);
-                break;
-            }
-        } // if numiov
-
-        // ENCRYPT!
-        dst[i] = isalpha(src[i]) ? src[i]^0x20 : src[i];
-        // dst[i] = src[i];
-
-        // Decrease UIO, if used
-        if (iovlen) iovlen--;
-    }
-
-    printk("crypto_decrypt: done\n");
-    return CRYPTO_SUCCESS;
-#endif
-    ASSERT(1==0);
-    return CRYPTO_FAILED;
-}
-
 
 // So far, ZFS-crypto only uses 2 buffers. data + mac
-#define SPL_CRYPTO_MAX_BUF 2
+#define SPL_CRYPTO_MAX_BUF 20
 
 
 size_t crypto_map_buffers(crypto_data_t *solaris_buffer,
-                       struct scatterlist linux_buffer[SPL_CRYPTO_MAX_BUF])
+                       struct scatterlist **linux_buffer)
 {
     uio_t *uio = NULL;
     iovec_t *iov = NULL;
@@ -183,25 +47,34 @@ size_t crypto_map_buffers(crypto_data_t *solaris_buffer,
     // Setup SOURCE buffer(s)
     switch(solaris_buffer->cd_format) {
     case CRYPTO_DATA_RAW: // One buffer.
-        sg_init_table(linux_buffer, 1 );
-        sg_set_buf(&linux_buffer[0],
+        *linux_buffer = kmalloc(sizeof(struct scatterlist) * 1, GFP_KERNEL);
+        if (!*linux_buffer) return 0;
+        sg_init_table(*linux_buffer, 1 );
+        sg_set_buf(&(*linux_buffer)[0],
                    solaris_buffer->cd_raw.iov_base, // srcptr
                    solaris_buffer->cd_length);      // srclen
+#ifdef ZFS_CRYPTO_VERBOSE
         printk("spl-crypto: mapping buffer to RAW->1 %p len 0x%04lx.\n",
                solaris_buffer->cd_raw.iov_base, solaris_buffer->cd_length);
+#endif
         return solaris_buffer->cd_length;
 
     case CRYPTO_DATA_UIO: // Multiple buffers.
         uio = solaris_buffer->cd_uio;
         iov = uio->uio_iov;
-        ASSERT( uio->uio_iovcnt <= SPL_CRYPTO_MAX_BUF );
-        sg_init_table(linux_buffer, uio->uio_iovcnt );
+        *linux_buffer = kmalloc(sizeof(struct scatterlist) * uio->uio_iovcnt,
+                                GFP_KERNEL);
+        if (!*linux_buffer) return 0;
+
+        sg_init_table(*linux_buffer, uio->uio_iovcnt );
         for (i = 0; i < uio->uio_iovcnt; i++) {
-            sg_set_buf(&linux_buffer[i],
-                        iov[i].iov_base,
-                        iov[i].iov_len);
+            sg_set_buf(&(*linux_buffer)[i],
+                       iov[i].iov_base,
+                       iov[i].iov_len);
+#ifdef ZFS_CRYPTO_VERBOSE
             printk("spl-crypto: mapping buffer %d to UIO->%d. %p len 0x%04lx\n",
                    i, uio->uio_iovcnt, iov[i].iov_base, iov[i].iov_len );
+#endif
             len += iov[i].iov_len;
         }
         return len;
@@ -224,7 +97,9 @@ static void spl_async_cipher_done(struct crypto_async_request *req, int err)
 {
 	struct tcrypt_result *res = req->data;
 
+#ifdef ZFS_CRYPTO_VERBOSE
     printk("cipher_work_done called: %d\n", err);
+#endif
 
 	if (err == -EINPROGRESS)
 		return;
@@ -254,6 +129,18 @@ void spl_crypto_map_iv(unsigned char *iv, int len, void *param)
 
 }
 
+
+int sg_nents(struct scatterlist *sg)
+{
+    int nents;
+    for (nents = 0; sg; sg = sg_next(sg))
+        nents++;
+    return nents;
+}
+
+
+
+#ifdef ZFS_USE_AEAD
 //
 // Wrapper call from Solaris API, to Linux API.
 //
@@ -261,22 +148,26 @@ void spl_crypto_map_iv(unsigned char *iv, int len, void *param)
 // into Linux scatterlist buffer(s).
 //
 int crypto_encrypt(crypto_mechanism_t *mech, crypto_data_t *plaintext,
-    crypto_key_t *key, crypto_ctx_template_t tmpl, crypto_data_t *ciphertext,
-    crypto_call_req_t *cr)
+                   crypto_key_t *key, crypto_ctx_template_t tmpl, crypto_data_t *ciphertext,
+                   crypto_call_req_t *cr)
 {
 #if _KERNEL
     int ret = CRYPTO_FAILED;
     struct crypto_aead  *tfm = NULL;
     struct aead_request *req = NULL;
     struct tcrypt_result result;
-    struct scatterlist linux_plain[SPL_CRYPTO_MAX_BUF];
-    struct scatterlist linux_cipher[SPL_CRYPTO_MAX_BUF];
+    struct scatterlist *linux_plain = NULL;
+    struct scatterlist *linux_cipher = NULL;
     size_t plainlen = 0, cryptlen = 0, maclen = 0;
     unsigned char iv[16];
     unsigned char assoc[16];
     struct scatterlist assoctext[1];
+    unsigned char *new_plain  = NULL;
+    unsigned char *new_cipher = NULL;
 
+#ifdef ZFS_CRYPTO_VERBOSE
     printk("spl-crypto: enter\n");
+#endif
 
     ASSERT(mech != NULL);
 
@@ -287,27 +178,63 @@ int crypto_encrypt(crypto_mechanism_t *mech, crypto_data_t *plaintext,
     ASSERT(key->ck_format == CRYPTO_KEY_RAW);
 
     // Use source len as cryptolen.
-    if (!(plainlen = crypto_map_buffers(plaintext, linux_plain)))
-        return CRYPTO_FAILED;
-    if (!(cryptlen = crypto_map_buffers(ciphertext, linux_cipher)))
-        return CRYPTO_FAILED;
+    if (!(plainlen = crypto_map_buffers(plaintext, &linux_plain)))
+        goto out;
+    if (!(cryptlen = crypto_map_buffers(ciphertext, &linux_cipher)))
+        goto out;
+
+    /*
+     * If scatterwalk_map_and_copy() is called on large dst buffers, we will
+     * "often" panic; usually in:
+     * BUG: unable to handle kernel paging request at ffffeb040011a880
+     * IP: [<ffffffff812f4880>] scatterwalk_done+0x50/0x60
+     *     [<ffffffff812f7640>] blkcipher_walk_done+0xb0/0x230
+     *     [<ffffffffa014a169>] crypto_ctr_crypt+0x129/0x2b0 [ctr]
+     *
+     * However, if we allocate a new buffer to use as dst, then call
+     * sg_copy_from_buffer() to copy the data back, all works well.
+     *
+     * Does anyone know why? Note that this makes it work for "gentle use",
+     * the crypto call will still scribble all over the stack "occasionally".
+     *
+     * Possibly, internal cipher routines are required, as the crypto/ API
+     * framework is currently too sensitive. (3.5.0)
+     *
+     */
+
+    // Allocate buffer to dst, total size.
+#ifdef ZFS_COPYDST
+    new_cipher = kmalloc(cryptlen, GFP_KERNEL);
+    if (!new_cipher) goto out;
+    sg_init_table(linux_cipher, 1 );
+    sg_set_buf(&linux_cipher[0], new_cipher, cryptlen);
+#ifdef ZFS_CRYPTO_VERBOSE
+    printk("spl-crypto: using all new buffers\n");
+#endif
+#endif
 
     // What is the size of the MAC buffer?
     maclen = cryptlen - plainlen;
 
+#ifdef ZFS_CRYPTO_VERBOSE
     printk("spl-crypto: buffers set, len 0x%04lx / 0x%04lx (mac %ld)\n",
            plainlen, cryptlen, maclen);
+#endif
 
     // This gets us a valid cipher, but the MAC differs from Solaris 'mac(sha256)'
-    tfm = crypto_alloc_aead("ccm(aes)", 0, 0);
-    if (IS_ERR(tfm)) return CRYPTO_FAILED;
+    tfm = crypto_alloc_aead(ZFS_CIPHER, 0, 0);
+    if (!tfm || IS_ERR(tfm)) return CRYPTO_FAILED;
 
-    printk("spl-crypto: aead alloc OK\n");
+#ifdef ZFS_CRYPTO_VERBOSE
+    printk("spl-crypto: aead alloc OK: %p\n", tfm);
+#endif
 
     req = aead_request_alloc(tfm, GFP_KERNEL);
     if (!req) goto out;
 
+#ifdef ZFS_CRYPTO_VERBOSE
     printk("spl-crypto: req alloc OK\n");
+#endif
 
     crypto_aead_setkey(tfm,
                        key->ck_data,
@@ -324,7 +251,9 @@ int crypto_encrypt(crypto_mechanism_t *mech, crypto_data_t *plaintext,
     aead_request_set_assoc(req, assoctext, sizeof(assoc));
     crypto_aead_setauthsize(tfm, maclen);
 
+#ifdef ZFS_CRYPTO_VERBOSE
     printk("spl-crypto: calling encrypt(0x%04lx)\n", plainlen);
+#endif
 
     ret = crypto_aead_encrypt(req);
 
@@ -348,11 +277,28 @@ int crypto_encrypt(crypto_mechanism_t *mech, crypto_data_t *plaintext,
         break;
     }
 
+#ifdef ZFS_COPYDST
+    // Copy back
+#ifdef ZFS_CRYPTO_VERBOSE
+    printk("spl-crypto: copy data back\n");
+#endif
+    if (!(cryptlen = crypto_map_buffers(ciphertext, &linux_cipher)))
+        return CRYPTO_FAILED;
+    sg_copy_from_buffer(linux_cipher, sg_nents(linux_cipher),
+                        new_cipher, cryptlen);
+#endif
+
  out:
     if (req) aead_request_free(req);
-    if (!IS_ERR(tfm)) crypto_free_aead(tfm);
+    if (tfm && !IS_ERR(tfm)) crypto_free_aead(tfm);
+    if (new_plain) kfree(new_plain);
+    if (new_cipher) kfree(new_cipher);
+    if (linux_plain) kfree(linux_plain);
+    if (linux_cipher) kfree(linux_cipher);
 
+#ifdef ZFS_CRYPTO_VERBOSE
     printk("spl-crypto: encrypt done: ret %d\n", ret);
+#endif
     return ret;
 #endif
     ASSERT(1==0);
@@ -370,14 +316,18 @@ int crypto_decrypt(crypto_mechanism_t *mech, crypto_data_t *ciphertext,
     struct crypto_aead  *tfm = NULL;
     struct aead_request *req = NULL;
     struct tcrypt_result result;
-    struct scatterlist linux_plain[SPL_CRYPTO_MAX_BUF];
-    struct scatterlist linux_cipher[SPL_CRYPTO_MAX_BUF];
+    struct scatterlist *linux_plain = NULL;
+    struct scatterlist *linux_cipher = NULL;
     size_t cryptlen = 0, plainlen = 0, maclen = 0;
     unsigned char iv[16];
     unsigned char assoc[16];
     struct scatterlist assoctext[1];
+    unsigned char *new_plain  = NULL;
+    unsigned char *new_cipher = NULL;
 
+#ifdef ZFS_CRYPTO_VERBOSE
     printk("spl-crypto: decrypt enter\n");
+#endif
 
     ASSERT(mech != NULL);
 
@@ -390,19 +340,47 @@ int crypto_decrypt(crypto_mechanism_t *mech, crypto_data_t *ciphertext,
     // Use source len as cryptolen. If we are given two buffers here,
     // the cryptolen should be msglen + maclen. ie, 512 + 16, which
     // is what linux_decrypt expects to get
-    if (!(plainlen = crypto_map_buffers(plaintext, linux_plain)))
+    if (!(plainlen = crypto_map_buffers(plaintext, &linux_plain)))
         return CRYPTO_FAILED;
-    if (!(cryptlen = crypto_map_buffers(ciphertext, linux_cipher)))
+    if (!(cryptlen = crypto_map_buffers(ciphertext, &linux_cipher)))
         return CRYPTO_FAILED;
+
+   /*
+     * If scatterwalk_map_and_copy() is called on large dst buffers, we will
+     * "often" panic; usually in:
+     * BUG: unable to handle kernel paging request at ffffeb040011a880
+     * IP: [<ffffffff812f4880>] scatterwalk_done+0x50/0x60
+     *     [<ffffffff812f7640>] blkcipher_walk_done+0xb0/0x230
+     *     [<ffffffffa014a169>] crypto_ctr_crypt+0x129/0x2b0 [ctr]
+     *
+     * However, if we allocate a new buffer to use as dst, then call
+     * sg_copy_from_buffer() to copy the data back, all works well.
+     *
+     * Does anyone know why?
+     *
+     */
+
+#ifdef ZFS_COPYDST
+    // Allocate buffer to dst, total size.
+    new_plain = kmalloc(plainlen, GFP_KERNEL);
+    if (!new_plain) goto out;
+    sg_init_table(linux_plain, 1 );
+    sg_set_buf(&linux_plain[0], new_plain, plainlen);
+#ifdef ZFS_CRYPTO_VERBOSE
+    printk("spl-crypto: using all new buffers\n");
+#endif
+#endif
 
     maclen = cryptlen - plainlen;
 
+#ifdef ZFS_CRYPTO_VERBOSE
     printk("spl-crypto: buffers set, len 0x%04lx / 0x%04lx (mac %ld)\n",
            plainlen, cryptlen, maclen);
+#endif
 
     // This gets us a valid cipher, but the MAC differs from Solaris 'mac(sha256)'
-    tfm = crypto_alloc_aead("ccm(aes)", 0, 0);
-    if (IS_ERR(tfm)) return CRYPTO_FAILED;
+    tfm = crypto_alloc_aead(ZFS_CIPHER, 0, 0);
+    if (!tfm || IS_ERR(tfm)) return CRYPTO_FAILED;
 
     req = aead_request_alloc(tfm, GFP_KERNEL);
     if (!req) goto out;
@@ -422,8 +400,10 @@ int crypto_decrypt(crypto_mechanism_t *mech, crypto_data_t *ciphertext,
     aead_request_set_assoc(req, assoctext, sizeof(assoc));
     crypto_aead_setauthsize(tfm, maclen);
 
+#ifdef ZFS_CRYPTO_VERBOSE
     printk("spl-crypt: calling decrypt(0x%04lx / 0x%04lx maclen %ld)\n",
            plainlen, cryptlen, maclen);
+#endif
 
     ret = crypto_aead_decrypt(req);
 
@@ -452,11 +432,190 @@ int crypto_decrypt(crypto_mechanism_t *mech, crypto_data_t *ciphertext,
         break;
     }
 
+
+#ifdef ZFS_COPYDST
+    // Copy back
+#ifdef ZFS_CRYPTO_VERBOSE
+    printk("spl-crypto: copy data back\n");
+#endif
+    if (!(plainlen = crypto_map_buffers(plaintext, &linux_plain)))
+        return CRYPTO_FAILED;
+
+    sg_copy_from_buffer(linux_plain, sg_nents(linux_plain),
+                        new_plain, plainlen);
+#endif
+
  out:
     if (req) aead_request_free(req);
-    if (!IS_ERR(tfm)) crypto_free_aead(tfm);
+    if (tfm && !IS_ERR(tfm)) crypto_free_aead(tfm);
+    if (new_plain) kfree(new_plain);
+    if (new_cipher) kfree(new_cipher);
+    if (linux_plain)  kfree(linux_plain);
+    if (linux_cipher) kfree(linux_cipher);
 
+#ifdef ZFS_CRYPTO_VERBOSE
     printk("spl-crypto: decrypt done.\n");
+#endif
+    return ret;
+#endif
+    ASSERT(1==0);
+    return CRYPTO_FAILED;
+}
+
+
+// ****************************************************************************
+// ****************************************************************************
+// ****************************************************************************
+// ****************************************************************************
+// ****************************************************************************
+// ****************************************************************************
+// ****************************************************************************
+// ****************************************************************************
+
+#elif defined ZFS_USE_BLOCK
+
+int crypto_encrypt(crypto_mechanism_t *mech, crypto_data_t *plaintext,
+                   crypto_key_t *key, crypto_ctx_template_t tmpl, crypto_data_t *ciphertext,
+                   crypto_call_req_t *cr)
+{
+#if _KERNEL
+    int ret = CRYPTO_FAILED;
+    struct crypto_ablkcipher *tfm = NULL;
+    struct scatterlist *linux_plain = NULL;
+    struct scatterlist *linux_cipher = NULL;
+    size_t plainlen = 0, cryptlen = 0, maclen = 0;
+    unsigned char iv[16];
+    unsigned char assoc[16];
+    struct scatterlist assoctext[1];
+    struct ablkcipher_request *req = NULL;
+    struct tcrypt_result result;
+    unsigned char *new_cipher = NULL;
+
+#ifdef ZFS_CRYPTO_VERBOSE
+    printk("spl-crypto: enter '%s'\n", ZFS_BLKCIPHER);
+#endif
+
+    ASSERT(mech != NULL);
+
+    // We don't use assoc, but it appears it needs to be supplied.
+    memset(assoc, 0, sizeof(assoc));
+    sg_init_one(&assoctext[0], assoc, sizeof(assoc));
+
+    ASSERT(key->ck_format == CRYPTO_KEY_RAW);
+
+    // Use source len as cryptolen.
+    if (!(plainlen = crypto_map_buffers(plaintext, &linux_plain)))
+        return CRYPTO_FAILED;
+    if (!(cryptlen = crypto_map_buffers(ciphertext, &linux_cipher)))
+        return CRYPTO_FAILED;
+
+    /*
+     * If scatterwalk_map_and_copy() is called on large dst buffers, we will
+     * "often" panic; usually in:
+     * BUG: unable to handle kernel paging request at ffffeb040011a880
+     * IP: [<ffffffff812f4880>] scatterwalk_done+0x50/0x60
+     *     [<ffffffff812f7640>] blkcipher_walk_done+0xb0/0x230
+     *     [<ffffffffa014a169>] crypto_ctr_crypt+0x129/0x2b0 [ctr]
+     *
+     * However, if we allocate a new buffer to use as dst, then call
+     * sg_copy_from_buffer() to copy the data back, all works well.
+     *
+     * Does anyone know why? Note that this makes it work for "gentle use",
+     * the crypto call will still scribble all over the stack "occasionally".
+     *
+     * Possibly, internal cipher routines are required, as the crypto/ API
+     * framework is currently too sensitive. (3.5.0)
+     *
+     */
+
+        // Allocate buffer to dst, total size.
+    new_cipher = kmalloc(cryptlen, GFP_KERNEL);
+    if (!new_cipher) goto out;
+    sg_init_table(linux_cipher, 1 );
+    sg_set_buf(&linux_cipher[0], new_cipher, cryptlen);
+    printk("spl-crypto: using all new buffers\n");
+
+
+
+    // What is the size of the MAC buffer?
+    maclen = cryptlen - plainlen;
+
+#ifdef ZFS_CRYPTO_VERBOSE
+    printk("spl-crypto: buffers set, len 0x%04lx / 0x%04lx (mac %ld)\n",
+           plainlen, cryptlen, maclen);
+#endif
+
+    // This gets us a valid cipher, but the MAC differs from Solaris 'mac(sha256)'
+    tfm = crypto_alloc_ablkcipher(ZFS_BLKCIPHER, 0, 0);
+    if (!tfm || IS_ERR(tfm)) goto out;
+
+    init_completion(&result.completion);
+
+    req = ablkcipher_request_alloc(tfm, GFP_KERNEL);
+    if (!req) goto out;
+
+#ifdef ZFS_CRYPTO_VERBOSE
+    printk("spl-crypto: blkcipher alloc OK: %p\n", tfm);
+#endif
+
+    ablkcipher_request_set_callback(req, CRYPTO_TFM_REQ_MAY_BACKLOG,
+                                    spl_async_cipher_done, &result);
+
+    crypto_ablkcipher_setkey(tfm,
+                             key->ck_data,
+                             key->ck_length / 8);
+
+    spl_crypto_map_iv(iv, sizeof(iv), mech->cm_param);
+
+#ifdef ZFS_CRYPTO_VERBOSE
+    printk("spl-crypto: calling encrypt(0x%04lx)\n", plainlen);
+#endif
+
+    ablkcipher_request_set_crypt(req, linux_plain, linux_cipher,
+                                 plainlen, iv);
+    ret = crypto_ablkcipher_encrypt(req);
+
+
+    switch(ret) {
+    case 0: // Success, immedate return
+        ret = CRYPTO_SUCCESS;
+        break;
+
+    case -EINPROGRESS: // Async call, wait for completion
+    case -EBUSY:
+        ret = wait_for_completion_interruptible(
+                                                &result.completion);
+        if (!ret && !(ret = result.err)) {
+            INIT_COMPLETION(result.completion);
+            break;
+        }
+        break;
+
+    default:
+        cmn_err(CE_WARN, "spl-crypto: encrypt failed: %d", ret);
+        break;
+    }
+
+    // Copy back
+    printk("spl-crypto: copy data back\n");
+    if (!(cryptlen = crypto_map_buffers(ciphertext, &linux_cipher)))
+        return CRYPTO_FAILED;
+
+    sg_copy_from_buffer(linux_cipher, sg_nents(linux_cipher),
+                        new_cipher, cryptlen);
+
+
+ out:
+    if (req) ablkcipher_request_free(req);
+    if (tfm && !IS_ERR(tfm)) crypto_free_ablkcipher(tfm);
+    if (new_cipher) kfree(new_cipher);
+    if (linux_plain) kfree(linux_plain);
+    if (linux_cipher) kfree(linux_cipher);
+
+
+#ifdef ZFS_CRYPTO_VERBOSE
+    printk("spl-crypto: encrypt done: ret %d\n", ret);
+#endif
     return ret;
 #endif
     ASSERT(1==0);
@@ -465,110 +624,242 @@ int crypto_decrypt(crypto_mechanism_t *mech, crypto_data_t *ciphertext,
 
 
 
-
-
-
-
-
-int crypto_encryptOLD(crypto_mechanism_t *mech, crypto_data_t *plaintext,
-    crypto_key_t *key, crypto_ctx_template_t tmpl, crypto_data_t *ciphertext,
+int crypto_decrypt(crypto_mechanism_t *mech, crypto_data_t *ciphertext,
+    crypto_key_t *key, crypto_ctx_template_t tmpl, crypto_data_t *plaintext,
     crypto_call_req_t *cr)
 {
 #if _KERNEL
-    unsigned char *src;
-    unsigned char *dst;
-    size_t len = 0;
-    int i;
-    unsigned int numiov = 0, curriov = 0, iovlen = 0;
-    uio_t *dstuio = NULL;
-    iovec_t *dstiov = NULL;
+    int ret = CRYPTO_FAILED;
+    struct crypto_ablkcipher *tfm = NULL;
+    struct scatterlist *linux_plain = NULL;
+    struct scatterlist *linux_cipher = NULL;
+    size_t cryptlen = 0, plainlen = 0, maclen = 0;
+    unsigned char iv[16];
+    unsigned char assoc[16];
+    struct scatterlist assoctext[1];
+    struct ablkcipher_request *req = NULL;
+    struct tcrypt_result result;
+    unsigned char *new_plain  = NULL;
 
-    // SOURCE is always RAW
-    if (plaintext->cd_format != CRYPTO_DATA_RAW) {
-        printk("crypto_encrypt  cd_format is NOT RAW?! %d\n", plaintext->cd_format);
+
+#ifdef ZFS_CRYPTO_VERBOSE
+    printk("spl-crypto: decrypt enter\n");
+#endif
+
+    ASSERT(mech != NULL);
+
+    // We don't use assoc, but it appears it needs to be supplied.
+    memset(assoc, 0, sizeof(assoc));
+    sg_init_one(&assoctext[0], assoc, sizeof(assoc));
+
+    ASSERT(key->ck_format == CRYPTO_KEY_RAW);
+
+    // Use source len as cryptolen. If we are given two buffers here,
+    // the cryptolen should be msglen + maclen. ie, 512 + 16, which
+    // is what linux_decrypt expects to get
+    if (!(plainlen = crypto_map_buffers(plaintext, &linux_plain)))
         return CRYPTO_FAILED;
-    }
-
-    // DST can be RAW, or UIO
-    if ((ciphertext->cd_format == CRYPTO_DATA_UIO) &&
-        (ciphertext->cd_uio->uio_segflg == UIO_USERSPACE)) {
-        printk("crypto_encrypt  cipher cd_format is UIO?! segment is %s!!!\n",
-               ciphertext->cd_uio->uio_segflg == UIO_USERSPACE ? "user" : "system");
+    if (!(cryptlen = crypto_map_buffers(ciphertext, &linux_cipher)))
         return CRYPTO_FAILED;
+
+   /*
+     * If scatterwalk_map_and_copy() is called on large dst buffers, we will
+     * "often" panic; usually in:
+     * BUG: unable to handle kernel paging request at ffffeb040011a880
+     * IP: [<ffffffff812f4880>] scatterwalk_done+0x50/0x60
+     *     [<ffffffff812f7640>] blkcipher_walk_done+0xb0/0x230
+     *     [<ffffffffa014a169>] crypto_ctr_crypt+0x129/0x2b0 [ctr]
+     *
+     * However, if we allocate a new buffer to use as dst, then call
+     * sg_copy_from_buffer() to copy the data back, all works well.
+     *
+     * Does anyone know why?
+     *
+     */
+   // Allocate buffer to dst, total size.
+    new_plain = kmalloc(plainlen, GFP_KERNEL);
+    if (!new_plain) goto out;
+    sg_init_table(linux_plain, 1 );
+    sg_set_buf(&linux_plain[0], new_plain, plainlen);
+    printk("spl-crypto: using all new buffers\n");
+
+    maclen = cryptlen - plainlen;
+
+#ifdef ZFS_CRYPTO_VERBOSE
+    printk("spl-crypto: buffers set, len 0x%04lx / 0x%04lx (mac %ld)\n",
+           plainlen, cryptlen, maclen);
+#endif
+
+    // This gets us a valid cipher, but the MAC differs from Solaris 'mac(sha256)'
+    tfm = crypto_alloc_ablkcipher(ZFS_BLKCIPHER, 0, 0);
+    if (!tfm || IS_ERR(tfm)) goto out;
+
+    init_completion(&result.completion);
+
+    req = ablkcipher_request_alloc(tfm, GFP_KERNEL);
+    if (!req) goto out;
+
+    ablkcipher_request_set_callback(req, CRYPTO_TFM_REQ_MAY_BACKLOG,
+                                    spl_async_cipher_done, &result);
+
+    crypto_ablkcipher_setkey(tfm,
+                             key->ck_data,
+                             key->ck_length / 8);
+
+    spl_crypto_map_iv(iv, sizeof(iv), mech->cm_param);
+
+
+#ifdef ZFS_CRYPTO_VERBOSE
+    printk("spl-crypt: calling decrypt(0x%04lx / 0x%04lx maclen %ld)\n",
+           plainlen, cryptlen, maclen);
+#endif
+
+    ablkcipher_request_set_crypt(req, linux_cipher, linux_plain,
+                                 plainlen, iv);
+
+    ret = crypto_ablkcipher_decrypt(req);
+
+
+    switch(ret) {
+    case 0: // Success, immedate return
+        ret = CRYPTO_SUCCESS;
+        break;
+
+    case -EINPROGRESS: // Async call, wait for completion
+    case -EBUSY:
+        ret = wait_for_completion_interruptible(
+                                                &result.completion);
+        if (!ret && !(ret = result.err)) {
+            INIT_COMPLETION(result.completion);
+            break;
+        }
+        break;
+
+    case EBADMSG: // Verify authenticate failed.
+        cmn_err(CE_WARN, "spl-crypto: decrypt verify failed.");
+        ret = CRYPTO_SUCCESS;
+        break;
+
+    default:
+        cmn_err(CE_WARN, "spl-crypto: decrypt failed: %d", ret);
+        break;
     }
 
-    // We dont support MBLK at all
-    if (ciphertext->cd_format == CRYPTO_DATA_MBLK) {
-        printk("crypto_encrypt  cipher cd_format is MBLK?!\n");
+    // Copy back
+    printk("spl-crypto: copy data back\n");
+    if (!(plainlen = crypto_map_buffers(plaintext, &linux_plain)))
         return CRYPTO_FAILED;
-    }
 
-    // We do not handle callbacks (so far they've not been needed)
-    if (cr != NULL) {
-      printk("cyrpto_encrypt with callback request not supported\n");
-      return CRYPTO_FAILED;
-    }
+    sg_copy_from_buffer(linux_plain, sg_nents(linux_plain),
+                        new_plain, plainlen);
 
-    src = (unsigned char *)plaintext->cd_raw.iov_base;
-    len = (size_t) plaintext->cd_length;
+ out:
+    if (req) ablkcipher_request_free(req);
+    if (tfm && !IS_ERR(tfm)) crypto_free_ablkcipher(tfm);
+    if (new_plain) kfree(new_plain);
+    if (linux_plain) kfree(linux_plain);
+    if (linux_cipher) kfree(linux_cipher);
 
-    if (ciphertext && ciphertext->cd_raw.iov_base)
-        dst = (unsigned char *)ciphertext->cd_raw.iov_base;
-    else
-        dst = src;
+#ifdef ZFS_CRYPTO_VERBOSE
+    printk("spl-crypto: decrypt done.\n");
+#endif
+    return ret;
+#endif
+    ASSERT(1==0);
+    return CRYPTO_FAILED;
+}
 
-    if (ciphertext->cd_format == CRYPTO_DATA_UIO) {
-      dstuio = ciphertext->cd_uio;
-      numiov = dstuio->uio_iovcnt;
-      curriov = 0;
-      iovlen = 0; // Forces read of first iov.
-      dstiov = dstuio->uio_iov;
-      printk("crypto_encrypt: UIO :  with %u iovs: total 0x%04lx/0x%04lx\n",
-             numiov,
-             (unsigned long)len,
-             (unsigned long)plaintext->cd_raw.iov_len);
-    }
+#else
 
-    if (numiov == 0) {
-      printk("crypto_encrypt (%p -> %p) 0x%04lx/0x%04lx (offset 0x%04lx: numiov %u)\n",
-	     src, dst,
-             (unsigned long)len,
-             (unsigned long)plaintext->cd_raw.iov_len,
-             (unsigned long)plaintext->cd_offset,
-             numiov);
-    }
+int crypto_encrypt(crypto_mechanism_t *mech, crypto_data_t *plaintext,
+                   crypto_key_t *key, crypto_ctx_template_t tmpl, crypto_data_t *ciphertext,
+                   crypto_call_req_t *cr)
+{
+    struct scatterlist *linux_plain = NULL;
+    struct scatterlist *linux_cipher = NULL;
+    size_t cryptlen = 0, plainlen = 0;
+    static int COUNT = 0;
+    void *buf = NULL;
+#if _KERNEL
 
-    for (i = 0; i < len; i++) {
+#ifdef ZFS_CRYPTO_VERBOSE
+    COUNT++;
+    printk("spl-crypto: encrypt enter. %d mech=%d\n", COUNT,
+           (int)mech->cm_type);
+#endif
 
-        if (numiov && !iovlen) { // uses UIO, and ran out of space, move to next
+    if (!(plainlen = crypto_map_buffers(plaintext, &linux_plain)))
+        return CRYPTO_FAILED;
+    if (!(cryptlen = crypto_map_buffers(ciphertext, &linux_cipher)))
+        return CRYPTO_FAILED;
 
-            dst = dstiov[ curriov ].iov_base;
-            iovlen = dstiov[ curriov ].iov_len;
+    printk(" copy from %p to %p \n", sg_virt(linux_plain), sg_virt(linux_cipher));
 
-            printk("crypto_encrypt IOV (%p -> %p) curriov %u, iovlen 0x%04lx\n",
-                   src, dst, curriov, (unsigned long)iovlen);
+    buf = kmalloc(plainlen, GFP_KERNEL);
+    if (!buf) return CRYPTO_FAILED;
 
-            curriov++; // Ready next.
-            if (curriov >= numiov) { // out of dst space
-                if (i < len) printk("crypto_encrypt ran outof dst space before src i=%d\n", i);
-                break;
-            }
-        } // if numiov
+    sg_copy_to_buffer(linux_plain, sg_nents(linux_plain), buf, plainlen);
+    sg_copy_from_buffer(linux_cipher, sg_nents(linux_cipher), buf, plainlen);
+    kfree(buf);
 
-        // ENCRYPT!
-        dst[i] = isalpha(src[i]) ? src[i]^0x20 : src[i];
-        //dst[i] = src[i];
+#ifdef ZFS_CRYPTO_VERBOSE
+    printk("spl-crypto: encrypt done 0x%04lx: %d\n", plainlen, COUNT);
+#endif
+    if (linux_plain)  kfree(linux_plain);
+    if (linux_cipher) kfree(linux_cipher);
 
-        // Decrease UIO, if used
-        if (iovlen) iovlen--;
-    }
-
-    printk("spl-crypto encrypt: done\n");
+    COUNT--;
     return CRYPTO_SUCCESS;
 #endif
     ASSERT(1==0);
     return CRYPTO_FAILED;
 }
+
+
+
+int crypto_decrypt(crypto_mechanism_t *mech, crypto_data_t *ciphertext,
+    crypto_key_t *key, crypto_ctx_template_t tmpl, crypto_data_t *plaintext,
+    crypto_call_req_t *cr)
+{
+    struct scatterlist *linux_plain  = NULL;
+    struct scatterlist *linux_cipher = NULL;
+    size_t cryptlen = 0, plainlen = 0;
+    void *buf;
+
+#if _KERNEL
+
+#ifdef ZFS_CRYPTO_VERBOSE
+    printk("spl-crypto: decrypt enter.\n");
+#endif
+
+    if (!(plainlen = crypto_map_buffers(plaintext, &linux_plain)))
+        return CRYPTO_FAILED;
+    if (!(cryptlen = crypto_map_buffers(ciphertext, &linux_cipher)))
+        return CRYPTO_FAILED;
+
+    buf = kmalloc(cryptlen, GFP_KERNEL);
+    if (!buf) return CRYPTO_FAILED;
+
+    sg_copy_to_buffer(linux_cipher, sg_nents(linux_cipher), buf, cryptlen);
+    sg_copy_from_buffer(linux_plain, sg_nents(linux_plain), buf, cryptlen);
+    kfree(buf);
+
+#ifdef ZFS_CRYPTO_VERBOSE
+    printk("spl-crypto: decrypt done.\n");
+#endif
+    if (linux_plain)  kfree(linux_plain);
+    if (linux_cipher) kfree(linux_cipher);
+
+    return CRYPTO_SUCCESS;
+#endif
+    ASSERT(1==0);
+    return CRYPTO_FAILED;
+}
+
+#endif
+
+
+
 
 
 
@@ -588,8 +879,10 @@ crypto_mech_type_t crypto_mech2id(crypto_mech_name_t name)
     if (!name || !*name)
         return CRYPTO_MECH_INVALID;
 
+#ifdef ZFS_CRYPTO_VERBOSE
 #if _KERNEL
     printk("called crypto_mech2id '%s'\n", name);
+#endif
 #endif
     if (name && !strcmp("CKM_AES_CCM", name)) return 1;
     return CRYPTO_MECH_INVALID;
