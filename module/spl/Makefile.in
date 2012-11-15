@@ -25,3 +25,4 @@ $(MODULE)-objs += @top_srcdir@/module/spl/spl-xdr.o
 $(MODULE)-objs += @top_srcdir@/module/spl/spl-cred.o
 $(MODULE)-objs += @top_srcdir@/module/spl/spl-tsd.o
 $(MODULE)-objs += @top_srcdir@/module/spl/spl-zlib.o
+$(MODULE)-objs += @top_srcdir@/module/spl/spl-crypto.o
