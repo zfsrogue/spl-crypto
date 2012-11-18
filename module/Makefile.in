@@ -1,5 +1,6 @@
 subdir-m += spl
 subdir-m += splat
+subdir-m += sun-ccm
 
 INSTALL=/usr/bin/install
 
