@@ -44,24 +44,36 @@ static int xblkcipher_walk_next(struct blkcipher_desc *desc,
 static int xblkcipher_walk_first(struct blkcipher_desc *desc,
 				struct xblkcipher_walk *walk);
 
+inline void Xscatterwalk_unmap(void *vaddr)
+{
+    kunmap_atomic(vaddr);
+}
+
+void *Xscatterwalk_map(struct scatter_walk *walk)
+{
+    return kmap_atomic(scatterwalk_page(walk)) +
+        offset_in_page(walk->offset);
+}
+
+
 static inline void xblkcipher_map_src(struct xblkcipher_walk *walk)
 {
-	walk->src.virt.addr = scatterwalk_map(&walk->in);
+	walk->src.virt.addr = Xscatterwalk_map(&walk->in);
 }
 
 static inline void xblkcipher_map_dst(struct xblkcipher_walk *walk)
 {
-	walk->dst.virt.addr = scatterwalk_map(&walk->out);
+	walk->dst.virt.addr = Xscatterwalk_map(&walk->out);
 }
 
 static inline void xblkcipher_unmap_src(struct xblkcipher_walk *walk)
 {
-	scatterwalk_unmap(walk->src.virt.addr);
+	Xscatterwalk_unmap(walk->src.virt.addr);
 }
 
 static inline void xblkcipher_unmap_dst(struct xblkcipher_walk *walk)
 {
-	scatterwalk_unmap(walk->dst.virt.addr);
+	Xscatterwalk_unmap(walk->dst.virt.addr);
 }
 
 /* Get a spot of the specified length that does not straddle a page.
@@ -132,9 +144,9 @@ void Xscatterwalk_copychunks(void *buf, struct scatter_walk *walk,
         if (len_this_page > nbytes)
             len_this_page = nbytes;
 
-        vaddr = scatterwalk_map(walk);
+        vaddr = Xscatterwalk_map(walk);
         memcpy_dir(buf, vaddr, len_this_page, out);
-        scatterwalk_unmap(vaddr);
+        Xscatterwalk_unmap(vaddr);
 
         scatterwalk_advance(walk, len_this_page);
 

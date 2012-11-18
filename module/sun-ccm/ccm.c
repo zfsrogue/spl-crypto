@@ -19,6 +19,11 @@
 #include <linux/module.h>
 #include <linux/slab.h>
 
+void Xscatterwalk_unmap(void *vaddr);
+void *Xscatterwalk_map(struct scatter_walk *walk);
+
+
+
 struct crypto_alg *crypto_alg_mod_lookup(const char *name, u32 type, u32 mask);
 
 struct ccm_instance_ctx {
@@ -216,12 +221,12 @@ static void get_data_to_compute(struct crypto_cipher *tfm,
 			scatterwalk_start(&walk, sg_next(walk.sg));
 			n = scatterwalk_clamp(&walk, len);
 		}
-		data_src = scatterwalk_map(&walk);
+		data_src = Xscatterwalk_map(&walk);
 
 		compute_mac(tfm, data_src, n, pctx);
 		len -= n;
 
-		scatterwalk_unmap(data_src);
+		Xscatterwalk_unmap(data_src);
 		scatterwalk_advance(&walk, n);
 		scatterwalk_done(&walk, 0, len);
 		if (len)
