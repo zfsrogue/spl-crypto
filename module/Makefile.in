@@ -1,6 +1,8 @@
 subdir-m += spl
 subdir-m += splat
+subdir-m += sun-ctr
 subdir-m += sun-ccm
+subdir-m += sun-gcm
 
 INSTALL=/usr/bin/install
 
