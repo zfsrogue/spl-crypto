@@ -52,7 +52,9 @@ AC_CONFIG_FILES([
 	module/Makefile
 	module/spl/Makefile
 	module/splat/Makefile
+	module/sun-ctr/Makefile
 	module/sun-ccm/Makefile
+	module/sun-gcm/Makefile
 	include/Makefile
 	scripts/Makefile
 	spl.spec

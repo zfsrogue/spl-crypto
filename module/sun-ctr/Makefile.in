@@ -1,10 +1,11 @@
 # Makefile.in for sun-ccm kernel module
 
-MODULE := sun-ccm
+MODULE := sun-ctr
 EXTRA_CFLAGS = $(SPL_MODULE_CFLAGS) @KERNELCPPFLAGS@
 
 # Sun CCM(CTR(AES))+HMAC(SHA256) compatibility
 obj-$(CONFIG_SPL) := $(MODULE).o
 
-$(MODULE)-objs += @top_srcdir@/module/sun-ccm/ccm.o
+$(MODULE)-objs += @top_srcdir@/module/sun-ctr/ctr.o
+$(MODULE)-objs += @top_srcdir@/module/sun-ctr/blkcipher.o
 
