@@ -6,37 +6,49 @@
 #include <crypto/scatterwalk.h>
 
 // ZFS_CRYPTO_VERBOSE is set in the crypto/api.h file
-//#define ZFS_CRYPTO_VERBOSE
+// #define ZFS_CRYPTO_VERBOSE
 
-// With AEAD, we use cipher "ccm(aes)", which does MAC for us, and often crash.
-// Without AEAD, we use blkcipher and call "ctr(aes)" ourselves.
 #define ZFS_USE_AEAD
 //#define ZFS_USE_BLOCK
 
 //#define ZFS_COPYDST
 
 
-#ifdef ZFS_COPYDST
-#define ZFS_CIPHER "ccm(aes)"
-#else
-#define ZFS_CIPHER "sun-ccm(aes)"
-#endif
+/*
+ * Linux cipher types, and the Solaris equivalent.
+ *
+ * This is an indexed structure. First entry is not used, since return
+ * of zero is considered failure. First cipher match, returns "1", then
+ * "1" is used to look up the cipher name, and optional hmac.
+ *
+ */
 
+struct cipher_map_s {
+    char *solaris_name;
+    int power_on_test; /* If 0, check cipher exists. Set to 1 after that */
+    char *linux_name;
+    char *hmac_name;   /* optional hmac if not part of linux_name */
+};
 
+typedef struct cipher_map_s cipher_map_t;
 
-#define ZFS_BLKCIPHER "sun-ctr(aes)"
-
-
-
-int crypto_mac(crypto_mechanism_t *mech, crypto_data_t *data,
-               crypto_key_t *key, crypto_ctx_template_t tmpl, crypto_data_t *mac,
-               crypto_call_req_t *cr)
+static cipher_map_t cipher_map[] =
 {
-#if _KERNEL
-    printk("crypto_mac\n");
+    { "NULL Cipher", 0, NULL, NULL },   /* 0, not used, must be defined */
+#if 0
+    { "CKM_AES_CCM", 0, "sun-ctr(aes)", "hmac(sha256)" },     /* 1 */
+#else
+    { "CKM_AES_CCM", 0, "sun-ccm(aes)", NULL },               /* 1 */
 #endif
-    return 0;
-}
+    { "CKM_AES_GCM", 0, "sun-gcm(aes)", NULL },               /* 2 */
+    { "CKM_AES_CTR", 0, "sun-ctr(aes)", NULL },               /* 3 */
+    { "CKM_SHA256_HMAC_GENERAL", 0, NULL, "hmac(sha256)" },   /* 4 */
+};
+
+#define NUM_CIPHER_MAP (sizeof(cipher_map) / sizeof(cipher_map_t))
+
+
+
 
 
 /*
@@ -137,7 +149,11 @@ void spl_crypto_map_iv(unsigned char *iv, int len, void *param)
 {
     CK_AES_CCM_PARAMS *ccm_param = (CK_AES_CCM_PARAMS *)param;
 
-    ASSERT(ccm_param != NULL);
+    // Make sure we are to use iv
+    if (!ccm_param || !ccm_param->nonce || !ccm_param->ulNonceSize) {
+        memset(iv, 0, len);
+        return;
+    }
 
     // 'iv' is set as, from Solaris kernel sources;
     // In ZFS-crypt, the "nonceSize" is always 12.
@@ -161,6 +177,7 @@ void spl_crypto_map_iv(unsigned char *iv, int len, void *param)
  * is in place.
  *
  */
+#ifdef ZFS_COPYDST
 int sg_nents(struct scatterlist *sg)
 {
     int nents;
@@ -168,7 +185,63 @@ int sg_nents(struct scatterlist *sg)
         nents++;
     return nents;
 }
+#endif
 
+
+int crypto_mac(crypto_mechanism_t *mech, crypto_data_t *data,
+               crypto_key_t *key, crypto_ctx_template_t tmpl, crypto_data_t *mac,
+               crypto_call_req_t *cr)
+{
+    int ret = CRYPTO_FAILED;
+    cipher_map_t *cm = NULL;
+    struct scatterlist *linux_data = NULL;
+    struct scatterlist *linux_hmac = NULL;
+    size_t datalen, hmaclen;
+    struct crypto_hash *htfm = NULL;
+    struct hash_desc desc;
+
+#if _KERNEL
+    printk("crypto_mac\n");
+#endif
+    ASSERT(mech != NULL);
+
+    if (mech->cm_type >= NUM_CIPHER_MAP) return CRYPTO_FAILED;
+    cm = &cipher_map[ mech->cm_type ];
+
+    if (!cm->hmac_name) return CRYPTO_FAILED;
+
+    ASSERT(key->ck_format == CRYPTO_KEY_RAW);
+
+    if (!(datalen = crypto_map_buffers(data, &linux_data)))
+        goto out;
+    if (!(hmaclen = crypto_map_buffers(data, &linux_hmac)))
+        goto out;
+
+    // Enough room in output?
+    if (crypto_hash_digestsize(htfm) > hmaclen) goto out;
+
+    htfm = crypto_alloc_hash(cm->hmac_name, 0, 0);
+    if (!htfm || IS_ERR(htfm)) goto out;
+
+    desc.tfm = htfm;
+    desc.flags = 0;
+
+    crypto_hash_setkey(htfm,
+                       key->ck_data,
+                       key->ck_length / 8);
+
+    ret = crypto_hash_digest(&desc, linux_data, datalen,
+                             sg_virt(linux_hmac)); // u8*, not scatterlist
+
+    if (!ret)
+        ret = CRYPTO_SUCCESS;
+
+ out:
+    if (htfm || !IS_ERR(htfm)) crypto_free_hash(htfm);
+    if (linux_data) kfree(linux_data);
+    if (linux_hmac) kfree(linux_hmac);
+    return ret;
+}
 
 
 #ifdef ZFS_USE_AEAD
@@ -181,8 +254,6 @@ int sg_nents(struct scatterlist *sg)
  * expanded to handle more ciphers, and key lengths.
  *
  */
-
-
 int crypto_encrypt(crypto_mechanism_t *mech, crypto_data_t *plaintext,
                    crypto_key_t *key, crypto_ctx_template_t tmpl,
                    crypto_data_t *ciphertext,
@@ -201,12 +272,22 @@ int crypto_encrypt(crypto_mechanism_t *mech, crypto_data_t *plaintext,
     struct scatterlist assoctext[1];
     unsigned char *new_plain  = NULL;
     unsigned char *new_cipher = NULL;
+    cipher_map_t *cm = NULL;
 
 #ifdef ZFS_CRYPTO_VERBOSE
-    printk("spl-crypto: encrypt enter\n");
+    printk("spl-crypto: encrypt enter: type %d\n", (int) mech->cm_type);
 #endif
 
     ASSERT(mech != NULL);
+
+    if (mech->cm_type >= NUM_CIPHER_MAP) return CRYPTO_FAILED;
+    cm = &cipher_map[ mech->cm_type ];
+
+#ifdef ZFS_CRYPTO_VERBOSE
+    printk("spl-crypto: ciphermap '%s' -> '%s' in use\n",
+           cm->solaris_name,
+           cm->linux_name);
+#endif
 
     // We don't use assoc, but it appears it needs to be supplied.
     memset(assoc, 0, sizeof(assoc));
@@ -263,8 +344,8 @@ int crypto_encrypt(crypto_mechanism_t *mech, crypto_data_t *plaintext,
            plainlen, cryptlen, maclen);
 #endif
 
-    // This gets us a valid cipher,butthe MAC diff from Solaris 'mac(sha256)'
-    tfm = crypto_alloc_aead(ZFS_CIPHER, 0, 0);
+    // This gets us a valid cipher,but the MAC diff from Solaris 'mac(sha256)'
+    tfm = crypto_alloc_aead(cm->linux_name, 0, 0);
     if (!tfm || IS_ERR(tfm)) return CRYPTO_FAILED;
 
 #ifdef ZFS_CRYPTO_VERBOSE
@@ -362,7 +443,6 @@ int crypto_encrypt(crypto_mechanism_t *mech, crypto_data_t *plaintext,
 
 
 
-//#define ZFS_COPYDST
 
 int crypto_decrypt(crypto_mechanism_t *mech, crypto_data_t *ciphertext,
     crypto_key_t *key, crypto_ctx_template_t tmpl, crypto_data_t *plaintext,
@@ -381,16 +461,27 @@ int crypto_decrypt(crypto_mechanism_t *mech, crypto_data_t *ciphertext,
     struct scatterlist assoctext[1];
     unsigned char *new_plain  = NULL;
     unsigned char *new_cipher = NULL;
+    cipher_map_t *cm = NULL;
 
 #ifdef ZFS_CRYPTO_VERBOSE
-    printk("spl-crypto: decrypt enter\n");
+    printk("spl-crypto: decrypt enter: type %d\n", (int)mech->cm_type);
 #endif
 
     ASSERT(mech != NULL);
 
+    if (mech->cm_type >= NUM_CIPHER_MAP) return CRYPTO_FAILED;
+    cm = &cipher_map[ mech->cm_type ];
+
+#ifdef ZFS_CRYPTO_VERBOSE
+    printk("spl-crypto: ciphermap '%s' -> '%s' in use\n",
+           cm->solaris_name,
+           cm->linux_name);
+#endif
+
     // We don't use assoc, but it appears it needs to be supplied.
     memset(assoc, 0, sizeof(assoc));
     sg_init_one(&assoctext[0], assoc, sizeof(assoc));
+
 
     ASSERT(key->ck_format == CRYPTO_KEY_RAW);
 
@@ -437,7 +528,7 @@ int crypto_decrypt(crypto_mechanism_t *mech, crypto_data_t *ciphertext,
            plainlen, cryptlen, maclen);
 #endif
 
-    tfm = crypto_alloc_aead(ZFS_CIPHER, 0, 0);
+    tfm = crypto_alloc_aead(cm->linux_name, 0, 0);
     if (!tfm || IS_ERR(tfm)) return CRYPTO_FAILED;
 
     req = aead_request_alloc(tfm, GFP_KERNEL);
@@ -482,7 +573,7 @@ int crypto_decrypt(crypto_mechanism_t *mech, crypto_data_t *ciphertext,
 
     case -EBADMSG: // Verify authenticate failed.
         cmn_err(CE_WARN, "spl-crypto: decrypt verify failed.");
-        ret = CRYPTO_SUCCESS;
+        ret = CRYPTO_SUCCESS;  // Fix me in future, should be failure.
         break;
 
     default:
@@ -539,7 +630,7 @@ int crypto_decrypt(crypto_mechanism_t *mech, crypto_data_t *ciphertext,
 
 #elif defined ZFS_USE_BLOCK
 
-#undef ZFS_COPYDST
+
 
 int crypto_encrypt(crypto_mechanism_t *mech, crypto_data_t *plaintext,
                    crypto_key_t *key, crypto_ctx_template_t tmpl, crypto_data_t *ciphertext,
@@ -574,13 +665,8 @@ int crypto_encrypt(crypto_mechanism_t *mech, crypto_data_t *plaintext,
     if (!(plainlen = crypto_map_buffers(plaintext, &linux_plain)))
         return CRYPTO_FAILED;
 
-#ifdef ZFS_COPYDST
     if (!(cryptlen = crypto_map_buffers(ciphertext, &linux_cipher)))
         return CRYPTO_FAILED;
-#else
-    if (!(cryptlen = crypto_map_buffers(ciphertext, &linux_cipher)))
-        return CRYPTO_FAILED;
-#endif
 
     /*
      * If scatterwalk_map_and_copy() is called on large dst buffers, we will
@@ -700,7 +786,6 @@ int crypto_encrypt(crypto_mechanism_t *mech, crypto_data_t *plaintext,
 }
 
 
-#define ZFS_COPYDST
 
 int crypto_decrypt(crypto_mechanism_t *mech, crypto_data_t *ciphertext,
     crypto_key_t *key, crypto_ctx_template_t tmpl, crypto_data_t *plaintext,
@@ -738,13 +823,8 @@ int crypto_decrypt(crypto_mechanism_t *mech, crypto_data_t *ciphertext,
     if (!(plainlen = crypto_map_buffers(plaintext, &linux_plain)))
         return CRYPTO_FAILED;
 
-#ifdef ZFS_COPYDST
     if (!(cryptlen = crypto_map_buffers(ciphertext, &linux_cipher)))
         return CRYPTO_FAILED;
-#else
-    if (!(cryptlen = crypto_map_buffers(ciphertext, &linux_cipher)))
-        return CRYPTO_FAILED;
-#endif
 
    /*
      * If scatterwalk_map_and_copy() is called on large dst buffers, we will
@@ -874,17 +954,95 @@ void crypto_destroy_ctx_template(crypto_ctx_template_t tmpl)
     return;
 }
 
+
+/*
+ *
+ * This function maps between Solaris cipher string, and Linux cipher string.
+ * It is always used as 'early test' on cipher availability, so we include
+ * testing the cipher here.
+ *
+ */
 crypto_mech_type_t crypto_mech2id(crypto_mech_name_t name)
 {
+    int i;
+
     if (!name || !*name)
         return CRYPTO_MECH_INVALID;
 
 #ifdef ZFS_CRYPTO_VERBOSE
 #if _KERNEL
-    printk("called crypto_mech2id '%s'\n", name);
+    printk("called crypto_mech2id '%s' (total %d)\n", name, (int)NUM_CIPHER_MAP);
 #endif
 #endif
-    if (name && !strcmp("CKM_AES_CCM", name)) return 1;
+
+    for (i = 0; i < NUM_CIPHER_MAP; i++) {
+
+        if (cipher_map[i].solaris_name &&
+            !strcmp(cipher_map[i].solaris_name, name)) {
+
+            // Do we test the cipher?
+            if (!cipher_map[i].power_on_test) {
+
+                // Test it only once
+                cipher_map[i].power_on_test = 1;
+
+                // linux_name set, and hmac_name = NULL, means AEAD
+                if (!cipher_map[i].hmac_name && cipher_map[i].linux_name) {
+
+                    /* AEAD cipher test */
+                    struct crypto_aead  *tfm = NULL;
+                    tfm = crypto_alloc_aead(cipher_map[i].linux_name, 0, 0);
+                    if (!tfm || IS_ERR(tfm)) {
+                        printk("spl-crypto: No such cipher '%s'.\nPlease ensure the correct kernel modules has been loaded,\nLinux name '%s'\n",
+                               cipher_map[i].solaris_name,
+                               cipher_map[i].linux_name);
+                        return CRYPTO_MECH_INVALID;
+                    }
+
+                    crypto_free_aead(tfm);
+                    printk("spl-crypto: Cipher test '%s' -> '%s' successful.\n",
+                           cipher_map[i].solaris_name,
+                           cipher_map[i].linux_name);
+
+
+                    // Both linux_name and hmac_name set means BLKCIPHER
+                } else if (cipher_map[i].hmac_name && cipher_map[i].linux_name) {
+
+                    /* ablkcipher test */
+                    struct crypto_ablkcipher *tfm = NULL;
+                    tfm = crypto_alloc_ablkcipher(cipher_map[i].linux_name, 0, 0);
+                    if (!tfm || IS_ERR(tfm)) {
+                        printk("spl-crypto: No such cipher '%s'.\nPlease ensure the correct kernel modules has been loaded,\nLinux name '%s'\n",
+                               cipher_map[i].solaris_name,
+                               cipher_map[i].linux_name);
+                        return CRYPTO_MECH_INVALID;
+                    }
+                    crypto_free_ablkcipher(tfm);
+
+                    // linux_name = NULL, and hmac_name set means just MAC
+                } else if (cipher_map[i].hmac_name && !cipher_map[i].linux_name) {
+
+                    struct crypto_hash *htfm = NULL;
+                    htfm = crypto_alloc_hash(cipher_map[i].hmac_name, 0, 0);
+                    if (!htfm || IS_ERR(htfm)) {
+                        printk("spl-crypto: No such MAC '%s'.\nPlease ensure the correct kernel modules has been loaded,\nLinux name '%s'\n",
+                               cipher_map[i].solaris_name,
+                               cipher_map[i].hmac_name);
+                        return CRYPTO_MECH_INVALID;
+                    }
+                    crypto_free_hash(htfm);
+
+                    // Both are NULL is a failure.
+                } else {
+                    return CRYPTO_MECH_INVALID;
+                }
+
+            }
+
+            return i; // Index into list.
+        }
+    } // for all cipher maps
+
     return CRYPTO_MECH_INVALID;
 }
 

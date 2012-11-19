@@ -48,12 +48,14 @@ inline void Xscatterwalk_unmap(void *vaddr)
 {
     kunmap_atomic(vaddr);
 }
+EXPORT_SYMBOL_GPL(Xscatterwalk_unmap);
 
 void *Xscatterwalk_map(struct scatter_walk *walk)
 {
     return kmap_atomic(scatterwalk_page(walk)) +
         offset_in_page(walk->offset);
 }
+EXPORT_SYMBOL_GPL(Xscatterwalk_map);
 
 
 static inline void xblkcipher_map_src(struct xblkcipher_walk *walk)
@@ -241,7 +243,7 @@ err:
 
 	return err;
 }
-EXPORT_SYMBOL_GPL(xblkcipher_walk_done);
+//EXPORT_SYMBOL_GPL(xblkcipher_walk_done);
 
 static inline int xblkcipher_next_slow(struct blkcipher_desc *desc,
 				      struct xblkcipher_walk *walk,
@@ -453,7 +455,7 @@ int xblkcipher_walk_virt_block(struct blkcipher_desc *desc,
 	walk->blocksize = blocksize;
 	return xblkcipher_walk_first(desc, walk);
 }
-EXPORT_SYMBOL_GPL(xblkcipher_walk_virt_block);
+//EXPORT_SYMBOL_GPL(xblkcipher_walk_virt_block);
 
 static int setkey_unaligned(struct crypto_tfm *tfm, const u8 *key,
 			    unsigned int keylen)
@@ -641,7 +643,7 @@ const struct crypto_type crypto_xblkcipher_type = {
 #endif
 	.report = crypto_xblkcipher_report,
 };
-EXPORT_SYMBOL_GPL(crypto_xblkcipher_type);
+//EXPORT_SYMBOL_GPL(crypto_xblkcipher_type);
 
 static int crypto_grab_nivcipher(struct crypto_skcipher_spawn *spawn,
 				const char *name, u32 type, u32 mask)

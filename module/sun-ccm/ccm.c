@@ -22,8 +22,6 @@
 void Xscatterwalk_unmap(void *vaddr);
 void *Xscatterwalk_map(struct scatter_walk *walk);
 
-
-
 struct crypto_alg *crypto_alg_mod_lookup(const char *name, u32 type, u32 mask);
 
 struct ccm_instance_ctx {
@@ -648,19 +646,13 @@ static struct crypto_template crypto_ccm_base_tmpl = {
 	.module = THIS_MODULE,
 };
 
-extern struct crypto_template crypto_ctr_tmpl;
-
 static int __init crypto_ccm_module_init(void)
 {
 	int err;
 
-	err = crypto_register_template(&crypto_ctr_tmpl);
-	if (err)
-		goto out;
-
 	err = crypto_register_template(&crypto_ccm_base_tmpl);
 	if (err)
-		goto out_undo_ctr;
+		goto out;
 
 	err = crypto_register_template(&crypto_ccm_tmpl);
 	if (err)
@@ -671,16 +663,13 @@ out:
 
 out_undo_base:
 	crypto_unregister_template(&crypto_ccm_base_tmpl);
-out_undo_ctr:
-	crypto_unregister_template(&crypto_ctr_tmpl);
-	goto out;
+    goto out;
 }
 
 static void __exit crypto_ccm_module_exit(void)
 {
 	crypto_unregister_template(&crypto_ccm_tmpl);
 	crypto_unregister_template(&crypto_ccm_base_tmpl);
-	crypto_unregister_template(&crypto_ctr_tmpl);
 }
 
 module_init(crypto_ccm_module_init);
