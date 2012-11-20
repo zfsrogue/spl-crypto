@@ -573,7 +573,8 @@ int crypto_decrypt(crypto_mechanism_t *mech, crypto_data_t *ciphertext,
 
     case -EBADMSG: // Verify authenticate failed.
         cmn_err(CE_WARN, "spl-crypto: decrypt verify failed.");
-        ret = CRYPTO_SUCCESS;  // Fix me in future, should be failure.
+        //ret = CRYPTO_SUCCESS;  // Fix me in future, should be failure.
+        ret = CRYPTO_INVALID_MAC;
         break;
 
     default:
