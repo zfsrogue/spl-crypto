@@ -6,11 +6,15 @@
 #include <crypto/scatterwalk.h>
 
 // ZFS_CRYPTO_VERBOSE is set in the crypto/api.h file
-// #define ZFS_CRYPTO_VERBOSE
+//#define ZFS_CRYPTO_VERBOSE
 
-#define ZFS_USE_AEAD
-//#define ZFS_USE_BLOCK
 
+/*
+ * The Crypto API has a bug, to work around it, we can allocate a new linear
+ * DST buffer, and copy. Which is not as efficient.
+ * The modules sun-ccm etc, was written to avoid this bug,
+ * and the need for copy.
+ */
 //#define ZFS_COPYDST
 
 
@@ -23,7 +27,14 @@
  *
  */
 
+enum cipher_type_t {
+    CIPHER_TYPE_AEAD = 0,
+    CIPHER_TYPE_BLK,
+    CIPHER_TYPE_MAC,
+};
+
 struct cipher_map_s {
+    enum cipher_type_t type;
     char *solaris_name;
     int power_on_test; /* If 0, check cipher exists. Set to 1 after that */
     char *linux_name;
@@ -34,15 +45,17 @@ typedef struct cipher_map_s cipher_map_t;
 
 static cipher_map_t cipher_map[] =
 {
-    { "NULL Cipher", 0, NULL, NULL },   /* 0, not used, must be defined */
+    /* 0, not used, must be defined */
+    { CIPHER_TYPE_MAC,  "NULL Cipher", 0, NULL, NULL },
 #if 0
-    { "CKM_AES_CCM", 0, "sun-ctr(aes)", "hmac(sha256)" },     /* 1 */
+    // TODO, attempt to make the MAC be the same as Solaris
+    { CIPHER_TYPE_AEAD, "CKM_AES_CCM", 0, "sun-ctr(aes)", "hmac(sha256)" },
 #else
-    { "CKM_AES_CCM", 0, "sun-ccm(aes)", NULL },               /* 1 */
+    { CIPHER_TYPE_AEAD, "CKM_AES_CCM", 0, "sun-ccm(aes)", NULL },
 #endif
-    { "CKM_AES_GCM", 0, "sun-gcm(aes)", NULL },               /* 2 */
-    { "CKM_AES_CTR", 0, "sun-ctr(aes)", NULL },               /* 3 */
-    { "CKM_SHA256_HMAC_GENERAL", 0, NULL, "hmac(sha256)" },   /* 4 */
+    { CIPHER_TYPE_AEAD, "CKM_AES_GCM", 0, "sun-gcm(aes)", NULL },
+    { CIPHER_TYPE_BLK,  "CKM_AES_CTR", 0, "sun-ctr(aes)", NULL },
+    { CIPHER_TYPE_MAC,  "CKM_SHA256_HMAC_GENERAL", 0, NULL, "hmac(sha256)" },
 };
 
 #define NUM_CIPHER_MAP (sizeof(cipher_map) / sizeof(cipher_map_t))
@@ -240,11 +253,12 @@ int crypto_mac(crypto_mechanism_t *mech, crypto_data_t *data,
     if (htfm || !IS_ERR(htfm)) crypto_free_hash(htfm);
     if (linux_data) kfree(linux_data);
     if (linux_hmac) kfree(linux_hmac);
+#ifdef ZFS_CRYPTO_VERBOSE
+    printk("spl-crypto: mac returning %d\n", ret);
+#endif
     return ret;
 }
 
-
-#ifdef ZFS_USE_AEAD
 
 
 /*
@@ -254,10 +268,10 @@ int crypto_mac(crypto_mechanism_t *mech, crypto_data_t *data,
  * expanded to handle more ciphers, and key lengths.
  *
  */
-int crypto_encrypt(crypto_mechanism_t *mech, crypto_data_t *plaintext,
-                   crypto_key_t *key, crypto_ctx_template_t tmpl,
-                   crypto_data_t *ciphertext,
-                   crypto_call_req_t *cr)
+int crypto_encrypt_aead(crypto_mechanism_t *mech, crypto_data_t *plaintext,
+                        crypto_key_t *key, crypto_ctx_template_t tmpl,
+                        crypto_data_t *ciphertext,
+                        crypto_call_req_t *cr)
 {
 #if _KERNEL
     int ret = CRYPTO_FAILED;
@@ -346,6 +360,7 @@ int crypto_encrypt(crypto_mechanism_t *mech, crypto_data_t *plaintext,
 
     // This gets us a valid cipher,but the MAC diff from Solaris 'mac(sha256)'
     tfm = crypto_alloc_aead(cm->linux_name, 0, 0);
+
     if (!tfm || IS_ERR(tfm)) return CRYPTO_FAILED;
 
 #ifdef ZFS_CRYPTO_VERBOSE
@@ -444,9 +459,9 @@ int crypto_encrypt(crypto_mechanism_t *mech, crypto_data_t *plaintext,
 
 
 
-int crypto_decrypt(crypto_mechanism_t *mech, crypto_data_t *ciphertext,
-    crypto_key_t *key, crypto_ctx_template_t tmpl, crypto_data_t *plaintext,
-    crypto_call_req_t *cr)
+int crypto_decrypt_aead(crypto_mechanism_t *mech, crypto_data_t *ciphertext,
+                        crypto_key_t *key, crypto_ctx_template_t tmpl,
+                        crypto_data_t *plaintext, crypto_call_req_t *cr)
 {
 #if _KERNEL
     int ret = CRYPTO_FAILED;
@@ -611,7 +626,7 @@ int crypto_decrypt(crypto_mechanism_t *mech, crypto_data_t *ciphertext,
     if (linux_cipher) kfree(linux_cipher);
 
 #ifdef ZFS_CRYPTO_VERBOSE
-    printk("spl-crypto: decrypt done.\n");
+    printk("spl-crypto: decrypt done. returning %d\n", ret);
 #endif
     return ret;
 #endif
@@ -620,22 +635,19 @@ int crypto_decrypt(crypto_mechanism_t *mech, crypto_data_t *ciphertext,
 }
 
 
-// ****************************************************************************
-// ****************************************************************************
-// ****************************************************************************
-// ****************************************************************************
-// ****************************************************************************
-// ****************************************************************************
-// ****************************************************************************
-// ****************************************************************************
-
-#elif defined ZFS_USE_BLOCK
+// *************************************************************************
+// *************************************************************************
+// *************************************************************************
+// *************************************************************************
+// *************************************************************************
+// *************************************************************************
+// *************************************************************************
+// *************************************************************************
 
 
-
-int crypto_encrypt(crypto_mechanism_t *mech, crypto_data_t *plaintext,
-                   crypto_key_t *key, crypto_ctx_template_t tmpl, crypto_data_t *ciphertext,
-                   crypto_call_req_t *cr)
+int crypto_encrypt_blk(crypto_mechanism_t *mech, crypto_data_t *plaintext,
+                       crypto_key_t *key, crypto_ctx_template_t tmpl,
+                       crypto_data_t *ciphertext, crypto_call_req_t *cr)
 {
 #if _KERNEL
     int ret = CRYPTO_FAILED;
@@ -649,12 +661,16 @@ int crypto_encrypt(crypto_mechanism_t *mech, crypto_data_t *plaintext,
     struct ablkcipher_request *req = NULL;
     struct tcrypt_result result;
     unsigned char *new_cipher = NULL;
+    cipher_map_t *cm = NULL;
 
 #ifdef ZFS_CRYPTO_VERBOSE
-    printk("spl-crypto: enter '%s'\n", ZFS_BLKCIPHER);
+    printk("spl-crypto: encrypt_blk\n");
 #endif
 
     ASSERT(mech != NULL);
+
+    if (mech->cm_type >= NUM_CIPHER_MAP) return CRYPTO_FAILED;
+    cm = &cipher_map[ mech->cm_type ];
 
     // We don't use assoc, but it appears it needs to be supplied.
     memset(assoc, 0, sizeof(assoc));
@@ -707,7 +723,7 @@ int crypto_encrypt(crypto_mechanism_t *mech, crypto_data_t *plaintext,
 #endif
 
     // This gets us a valid cipher, but the MAC differs from Solaris 'mac(sha256)'
-    tfm = crypto_alloc_ablkcipher(ZFS_BLKCIPHER, 0, 0);
+    tfm = crypto_alloc_ablkcipher(cm->linux_name, 0, 0);
     if (!tfm || IS_ERR(tfm)) goto out;
 
     init_completion(&result.completion);
@@ -788,9 +804,9 @@ int crypto_encrypt(crypto_mechanism_t *mech, crypto_data_t *plaintext,
 
 
 
-int crypto_decrypt(crypto_mechanism_t *mech, crypto_data_t *ciphertext,
-    crypto_key_t *key, crypto_ctx_template_t tmpl, crypto_data_t *plaintext,
-    crypto_call_req_t *cr)
+int crypto_decrypt_blk(crypto_mechanism_t *mech, crypto_data_t *ciphertext,
+                       crypto_key_t *key, crypto_ctx_template_t tmpl,
+                       crypto_data_t *plaintext, crypto_call_req_t *cr)
 {
 #if _KERNEL
     int ret = CRYPTO_FAILED;
@@ -804,13 +820,16 @@ int crypto_decrypt(crypto_mechanism_t *mech, crypto_data_t *ciphertext,
     struct ablkcipher_request *req = NULL;
     struct tcrypt_result result;
     unsigned char *new_plain  = NULL;
-
+    cipher_map_t *cm = NULL;
 
 #ifdef ZFS_CRYPTO_VERBOSE
     printk("spl-crypto: decrypt enter\n");
 #endif
 
     ASSERT(mech != NULL);
+
+    if (mech->cm_type >= NUM_CIPHER_MAP) return CRYPTO_FAILED;
+    cm = &cipher_map[ mech->cm_type ];
 
     // We don't use assoc, but it appears it needs to be supplied.
     memset(assoc, 0, sizeof(assoc));
@@ -858,7 +877,7 @@ int crypto_decrypt(crypto_mechanism_t *mech, crypto_data_t *ciphertext,
 #endif
 
     // This gets us a valid cipher, but the MAC differs from Solaris 'mac(sha256)'
-    tfm = crypto_alloc_ablkcipher(ZFS_BLKCIPHER, 0, 0);
+    tfm = crypto_alloc_ablkcipher(cm->linux_name, 0, 0);
     if (!tfm || IS_ERR(tfm)) goto out;
 
     init_completion(&result.completion);
@@ -938,7 +957,48 @@ int crypto_decrypt(crypto_mechanism_t *mech, crypto_data_t *ciphertext,
     return CRYPTO_FAILED;
 }
 
-#endif
+
+
+
+int crypto_encrypt(crypto_mechanism_t *mech, crypto_data_t *plaintext,
+                   crypto_key_t *key, crypto_ctx_template_t tmpl,
+                   crypto_data_t *ciphertext, crypto_call_req_t *cr)
+{
+    cipher_map_t *cm = NULL;
+
+    if (mech->cm_type >= NUM_CIPHER_MAP) return CRYPTO_FAILED;
+    cm = &cipher_map[ mech->cm_type ];
+
+    if (cm->type == CIPHER_TYPE_AEAD)
+        return crypto_encrypt_aead(mech, plaintext, key, tmpl,
+                                   ciphertext, cr);
+
+    if (cm->type == CIPHER_TYPE_BLK)
+        return crypto_encrypt_blk(mech, plaintext, key, tmpl,
+                                  ciphertext, cr);
+
+    return CRYPTO_FAILED;
+}
+
+int crypto_decrypt(crypto_mechanism_t *mech, crypto_data_t *ciphertext,
+                   crypto_key_t *key, crypto_ctx_template_t tmpl,
+                   crypto_data_t *plaintext, crypto_call_req_t *cr)
+{
+    cipher_map_t *cm = NULL;
+
+    if (mech->cm_type >= NUM_CIPHER_MAP) return CRYPTO_FAILED;
+    cm = &cipher_map[ mech->cm_type ];
+
+    if (cm->type == CIPHER_TYPE_AEAD)
+        return crypto_decrypt_aead(mech, ciphertext, key, tmpl,
+                                   plaintext, cr);
+
+    if (cm->type == CIPHER_TYPE_BLK)
+        return crypto_decrypt_blk(mech, ciphertext, key, tmpl,
+                                  plaintext, cr);
+
+    return CRYPTO_FAILED;
+}
 
 
 
@@ -987,14 +1047,13 @@ crypto_mech_type_t crypto_mech2id(crypto_mech_name_t name)
                 // Test it only once
                 cipher_map[i].power_on_test = 1;
 
-                // linux_name set, and hmac_name = NULL, means AEAD
-                if (!cipher_map[i].hmac_name && cipher_map[i].linux_name) {
+                if (cipher_map[i].type == CIPHER_TYPE_AEAD) {
 
                     /* AEAD cipher test */
                     struct crypto_aead  *tfm = NULL;
                     tfm = crypto_alloc_aead(cipher_map[i].linux_name, 0, 0);
                     if (!tfm || IS_ERR(tfm)) {
-                        printk("spl-crypto: No such cipher '%s'.\nPlease ensure the correct kernel modules has been loaded,\nLinux name '%s'\n",
+                        printk("spl-crypto: No such AEAD cipher '%s'.\nPlease ensure the correct kernel modules has been loaded,\nLinux name '%s'\n",
                                cipher_map[i].solaris_name,
                                cipher_map[i].linux_name);
                         return CRYPTO_MECH_INVALID;
@@ -1007,13 +1066,13 @@ crypto_mech_type_t crypto_mech2id(crypto_mech_name_t name)
 
 
                     // Both linux_name and hmac_name set means BLKCIPHER
-                } else if (cipher_map[i].hmac_name && cipher_map[i].linux_name) {
+                } else if (cipher_map[i].type == CIPHER_TYPE_BLK) {
 
                     /* ablkcipher test */
                     struct crypto_ablkcipher *tfm = NULL;
                     tfm = crypto_alloc_ablkcipher(cipher_map[i].linux_name, 0, 0);
                     if (!tfm || IS_ERR(tfm)) {
-                        printk("spl-crypto: No such cipher '%s'.\nPlease ensure the correct kernel modules has been loaded,\nLinux name '%s'\n",
+                        printk("spl-crypto: No such blkcipher '%s'.\nPlease ensure the correct kernel modules has been loaded,\nLinux name '%s'\n",
                                cipher_map[i].solaris_name,
                                cipher_map[i].linux_name);
                         return CRYPTO_MECH_INVALID;
@@ -1021,7 +1080,7 @@ crypto_mech_type_t crypto_mech2id(crypto_mech_name_t name)
                     crypto_free_ablkcipher(tfm);
 
                     // linux_name = NULL, and hmac_name set means just MAC
-                } else if (cipher_map[i].hmac_name && !cipher_map[i].linux_name) {
+                } else if (cipher_map[i].type == CIPHER_TYPE_MAC) {
 
                     struct crypto_hash *htfm = NULL;
                     htfm = crypto_alloc_hash(cipher_map[i].hmac_name, 0, 0);
@@ -1044,6 +1103,7 @@ crypto_mech_type_t crypto_mech2id(crypto_mech_name_t name)
         }
     } // for all cipher maps
 
+    printk("spl-crypto: mac2id returning INVALID\n");
     return CRYPTO_MECH_INVALID;
 }
 
