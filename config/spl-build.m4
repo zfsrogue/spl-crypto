@@ -26,7 +26,6 @@ AC_DEFUN([SPL_AC_CONFIG_KERNEL], [
 	SPL_AC_TYPE_ATOMIC64_CMPXCHG
 	SPL_AC_TYPE_ATOMIC64_XCHG
 	SPL_AC_TYPE_UINTPTR_T
-	SPL_AC_3ARGS_INIT_WORK
 	SPL_AC_2ARGS_REGISTER_SYSCTL
 	SPL_AC_SET_SHRINKER
 	SPL_AC_3ARGS_SHRINKER_CALLBACK
@@ -141,11 +140,7 @@ AC_DEFUN([SPL_AC_KERNEL], [
 		if test -n "$sourcelink" && test -e ${sourcelink}; then
 			kernelsrc=`readlink -f ${sourcelink}`
 		else
-			AC_MSG_RESULT([Not found])
-			AC_MSG_ERROR([
-	*** Please make sure the kernel devel package for your distribution
-	*** is installed then try again.  If that fails you can specify the
-	*** location of the kernel source with the '--with-linux=PATH' option.])
+			kernelsrc="[Not found]"
 		fi
 	else
 		if test "$kernelsrc" = "NONE"; then
@@ -154,6 +149,13 @@ AC_DEFUN([SPL_AC_KERNEL], [
 	fi
 
 	AC_MSG_RESULT([$kernelsrc])
+	if test ! -d "$kernelsrc"; then
+		AC_MSG_ERROR([
+	*** Please make sure the kernel devel package for your distribution
+	*** is installed then try again.  If that fails you can specify the
+	*** location of the kernel source with the '--with-linux=PATH' option.])
+	fi
+
 	AC_MSG_CHECKING([kernel build directory])
 	if test -z "$kernelbuild"; then
 		if test -e "/lib/modules/$(uname -r)/build"; then
@@ -864,26 +866,6 @@ AC_DEFUN([SPL_AC_TYPE_UINTPTR_T],
 		          [kernel defines uintptr_t])
 	],[
 		AC_MSG_RESULT([no])
-	])
-])
-
-dnl #
-dnl # 2.6.20 API change,
-dnl # INIT_WORK use 2 args and not store data inside
-dnl #
-AC_DEFUN([SPL_AC_3ARGS_INIT_WORK],
-	[AC_MSG_CHECKING([whether INIT_WORK wants 3 args])
-	SPL_LINUX_TRY_COMPILE([
-		#include <linux/workqueue.h>
-	],[
-		struct work_struct work __attribute__ ((unused));
-		INIT_WORK(&work, NULL, NULL);
-	],[
-		AC_MSG_RESULT(yes)
-		AC_DEFINE(HAVE_3ARGS_INIT_WORK, 1,
-		          [INIT_WORK wants 3 args])
-	],[
-		AC_MSG_RESULT(no)
 	])
 ])
 
