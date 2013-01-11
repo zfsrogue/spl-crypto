@@ -386,7 +386,7 @@ int crypto_encrypt_aead(crypto_mechanism_t *mech, crypto_data_t *plaintext,
                               spl_async_cipher_done, &result);
 
     aead_request_set_crypt(req, linux_plain, linux_cipher, plainlen, iv);
-    aead_request_set_assoc(req, assoctext, sizeof(assoc));
+    aead_request_set_assoc(req, assoctext, 0);
     crypto_aead_setauthsize(tfm, maclen);
 
 #ifdef ZFS_CRYPTO_VERBOSE
@@ -561,7 +561,7 @@ int crypto_decrypt_aead(crypto_mechanism_t *mech, crypto_data_t *ciphertext,
                               spl_async_cipher_done, &result);
 
     aead_request_set_crypt(req, linux_cipher, linux_plain, cryptlen, iv);
-    aead_request_set_assoc(req, assoctext, sizeof(assoc));
+    aead_request_set_assoc(req, assoctext, 0);
     crypto_aead_setauthsize(tfm, maclen);
 
 #ifdef ZFS_CRYPTO_VERBOSE
