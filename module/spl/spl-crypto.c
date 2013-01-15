@@ -168,17 +168,14 @@ void spl_crypto_map_iv(unsigned char *iv, int len, void *param)
         return;
     }
 
-    // 'iv' is set as, from Solaris kernel sources;
-    // In ZFS-crypt, the "nonceSize" is always 12.
     // q = (uint8_t)((15 - nonceSize) & 0xFF);
     // cb[0] = 0x07 & (q-1);
     // cb[1..12] = supplied nonce
     // cb[13..14] = 0
     // cb[15] = 1;
     memset(iv, 0, len); // Make all bytes 0 first.
-    iv[0]  = 0x02;
-    memcpy(&iv[1], ccm_param->nonce, ccm_param->ulNonceSize); // 12 bytes
-    iv[15] = 0x01;
+    iv[0] = (( 15-ccm_param->ulNonceSize-1 )&7);
+    memcpy(&iv[1], ccm_param->nonce, ccm_param->ulNonceSize); // ~12 bytes
 
 }
 
@@ -282,8 +279,6 @@ int crypto_encrypt_aead(crypto_mechanism_t *mech, crypto_data_t *plaintext,
     struct scatterlist *linux_cipher = NULL;
     size_t plainlen = 0, cryptlen = 0, maclen = 0;
     unsigned char iv[16];
-    unsigned char assoc[16];
-    struct scatterlist assoctext[1];
     unsigned char *new_plain  = NULL;
     unsigned char *new_cipher = NULL;
     cipher_map_t *cm = NULL;
@@ -302,10 +297,6 @@ int crypto_encrypt_aead(crypto_mechanism_t *mech, crypto_data_t *plaintext,
            cm->solaris_name,
            cm->linux_name);
 #endif
-
-    // We don't use assoc, but it appears it needs to be supplied.
-    memset(assoc, 0, sizeof(assoc));
-    sg_init_one(&assoctext[0], assoc, sizeof(assoc));
 
     ASSERT(key->ck_format == CRYPTO_KEY_RAW);
 
@@ -386,7 +377,7 @@ int crypto_encrypt_aead(crypto_mechanism_t *mech, crypto_data_t *plaintext,
                               spl_async_cipher_done, &result);
 
     aead_request_set_crypt(req, linux_plain, linux_cipher, plainlen, iv);
-    aead_request_set_assoc(req, assoctext, sizeof(assoc));
+    aead_request_set_assoc(req, NULL, 0);
     crypto_aead_setauthsize(tfm, maclen);
 
 #ifdef ZFS_CRYPTO_VERBOSE
@@ -472,8 +463,6 @@ int crypto_decrypt_aead(crypto_mechanism_t *mech, crypto_data_t *ciphertext,
     struct scatterlist *linux_cipher = NULL;
     size_t cryptlen = 0, plainlen = 0, maclen = 0;
     unsigned char iv[16];
-    unsigned char assoc[16];
-    struct scatterlist assoctext[1];
     unsigned char *new_plain  = NULL;
     unsigned char *new_cipher = NULL;
     cipher_map_t *cm = NULL;
@@ -492,11 +481,6 @@ int crypto_decrypt_aead(crypto_mechanism_t *mech, crypto_data_t *ciphertext,
            cm->solaris_name,
            cm->linux_name);
 #endif
-
-    // We don't use assoc, but it appears it needs to be supplied.
-    memset(assoc, 0, sizeof(assoc));
-    sg_init_one(&assoctext[0], assoc, sizeof(assoc));
-
 
     ASSERT(key->ck_format == CRYPTO_KEY_RAW);
 
@@ -548,7 +532,6 @@ int crypto_decrypt_aead(crypto_mechanism_t *mech, crypto_data_t *ciphertext,
 
     req = aead_request_alloc(tfm, GFP_KERNEL);
     if (!req) goto out;
-
     crypto_aead_setkey(tfm,
                        key->ck_data,
                        key->ck_length / 8);
@@ -561,7 +544,7 @@ int crypto_decrypt_aead(crypto_mechanism_t *mech, crypto_data_t *ciphertext,
                               spl_async_cipher_done, &result);
 
     aead_request_set_crypt(req, linux_cipher, linux_plain, cryptlen, iv);
-    aead_request_set_assoc(req, assoctext, sizeof(assoc));
+    aead_request_set_assoc(req, NULL, 0);
     crypto_aead_setauthsize(tfm, maclen);
 
 #ifdef ZFS_CRYPTO_VERBOSE
@@ -616,6 +599,7 @@ int crypto_decrypt_aead(crypto_mechanism_t *mech, crypto_data_t *ciphertext,
     sg_copy_from_buffer(linux_plain, sg_nents(linux_plain),
                         new_plain, plainlen);
 #endif
+
 
  out:
     if (req) aead_request_free(req);
