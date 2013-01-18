@@ -36,7 +36,8 @@ enum cipher_type_t {
 enum param_type_t {
     PARAM_TYPE_NONE = 0,
     PARAM_TYPE_CCM,
-    PARAM_TYPE_GCM
+    PARAM_TYPE_GCM,
+    PARAM_TYPE_CTR
 };
 
 struct cipher_map_s {
@@ -224,6 +225,16 @@ void spl_crypto_map_iv(unsigned char *iv, int len, crypto_mechanism_t *mech)
             return;
         }
         break;
+
+    case PARAM_TYPE_CTR:
+        {
+            CK_AES_CTR_PARAMS *ctr_param = (CK_AES_CTR_PARAMS *)mech->cm_param;
+            if (!ctr_param) goto clear;
+
+            memset(iv, 0, len);
+            memcpy(iv, ctr_param->cb, ctr_param->ulCounterBits >> 3);
+            return;
+        }
 
     default:
         break;
