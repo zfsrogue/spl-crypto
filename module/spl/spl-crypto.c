@@ -33,8 +33,15 @@ enum cipher_type_t {
     CIPHER_TYPE_MAC,
 };
 
+enum param_type_t {
+    PARAM_TYPE_NONE = 0,
+    PARAM_TYPE_CCM,
+    PARAM_TYPE_GCM
+};
+
 struct cipher_map_s {
     enum cipher_type_t type;
+    enum param_type_t param_type;
     char *solaris_name;
     int power_on_test; /* If 0, check cipher exists. Set to 1 after that */
     char *linux_name;
@@ -46,16 +53,21 @@ typedef struct cipher_map_s cipher_map_t;
 static cipher_map_t cipher_map[] =
 {
     /* 0, not used, must be defined */
-    { CIPHER_TYPE_MAC,  "NULL Cipher", 0, NULL, NULL },
+    { CIPHER_TYPE_MAC, PARAM_TYPE_NONE, "NULL Cipher", 0, NULL, NULL },
 #if 0
     // TODO, attempt to make the MAC be the same as Solaris
-    { CIPHER_TYPE_AEAD, "CKM_AES_CCM", 0, "sun-ctr(aes)", "hmac(sha256)" },
+    { CIPHER_TYPE_AEAD, PARAM_TYPE_CCM,
+      "CKM_AES_CCM", 0, "sun-ctr(aes)", "hmac(sha256)" },
 #else
-    { CIPHER_TYPE_AEAD, "CKM_AES_CCM", 0, "sun-ccm(aes)", NULL },
+    { CIPHER_TYPE_AEAD, PARAM_TYPE_CCM,
+      "CKM_AES_CCM", 0, "sun-ccm(aes)", NULL },
 #endif
-    { CIPHER_TYPE_AEAD, "CKM_AES_GCM", 0, "sun-gcm(aes)", NULL },
-    { CIPHER_TYPE_BLK,  "CKM_AES_CTR", 0, "sun-ctr(aes)", NULL },
-    { CIPHER_TYPE_MAC,  "CKM_SHA256_HMAC_GENERAL", 0, NULL, "hmac(sha256)" },
+    { CIPHER_TYPE_AEAD, PARAM_TYPE_GCM,
+      "CKM_AES_GCM", 0, "sun-gcm(aes)", NULL },
+    { CIPHER_TYPE_BLK,  PARAM_TYPE_NONE,
+      "CKM_AES_CTR", 0, "sun-ctr(aes)", NULL },
+    { CIPHER_TYPE_MAC,  PARAM_TYPE_NONE,
+      "CKM_SHA256_HMAC_GENERAL", 0, NULL, "hmac(sha256)" },
 };
 
 #define NUM_CIPHER_MAP (sizeof(cipher_map) / sizeof(cipher_map_t))
@@ -158,25 +170,67 @@ static void spl_async_cipher_done(struct crypto_async_request *req, int err)
 }
 
 
-void spl_crypto_map_iv(unsigned char *iv, int len, void *param)
+void spl_crypto_map_iv(unsigned char *iv, int len, crypto_mechanism_t *mech)
 {
-    CK_AES_CCM_PARAMS *ccm_param = (CK_AES_CCM_PARAMS *)param;
+    cipher_map_t *cm = NULL;
 
     // Make sure we are to use iv
-    if (!ccm_param || !ccm_param->nonce || !ccm_param->ulNonceSize) {
-        memset(iv, 0, len);
-        return;
+    if (!mech || !mech->cm_param || (len < 16)) goto clear;
+
+    cm = &cipher_map[ mech->cm_type ];
+
+    switch(cm->param_type) {
+
+    case PARAM_TYPE_CCM:
+        {
+            CK_AES_CCM_PARAMS *ccm_param = (CK_AES_CCM_PARAMS *)mech->cm_param;
+            if (!ccm_param || !ccm_param->nonce) goto clear;
+
+            // 'iv' is set as, from Solaris kernel sources;
+            // In ZFS-crypt, the "nonceSize" is often 12
+            // q = (uint8_t)((15 - nonceSize) & 0xFF);
+            // cb[0] = 0x07 & (q-1);
+            // cb[1..12] = supplied nonce
+            // The counter, and length, is handled inside crypto, so we just
+            // clear it here. (set it to 1)
+            memset(&iv[ccm_param->ulNonceSize+1], 0,
+                   len-ccm_param->ulNonceSize-2); // skip flags, and [15]
+            iv[0] = (( 15-ccm_param->ulNonceSize-1 )&7);
+            memcpy(&iv[1], ccm_param->nonce, ccm_param->ulNonceSize);
+            iv[15] = 0x01;
+            return;
+        }
+        break;
+
+
+    case PARAM_TYPE_GCM:
+        {
+            CK_AES_GCM_PARAMS *gcm_param = (CK_AES_GCM_PARAMS *)mech->cm_param;
+            uint32_t ivlen;
+            if (!gcm_param || !gcm_param->pIv) goto clear;
+
+            /*
+             * Unfortunately, the implementations between FreeBSD and
+             * Linux differ in handling the case of GCM ivlen != 12.
+             * So we force ivlen = 12 for now.
+             */
+
+            ivlen = gcm_param->ulIvLen;
+            if (ivlen != 12) ivlen = 12;
+
+            memset(iv, 0, len);
+            memcpy(iv, gcm_param->pIv, MIN(gcm_param->ulIvLen, ivlen));
+
+            return;
+        }
+        break;
+
+    default:
+        break;
     }
 
-    // q = (uint8_t)((15 - nonceSize) & 0xFF);
-    // cb[0] = 0x07 & (q-1);
-    // cb[1..12] = supplied nonce
-    // cb[13..14] = 0
-    // cb[15] = 1;
-    memset(iv, 0, len); // Make all bytes 0 first.
-    iv[0] = (( 15-ccm_param->ulNonceSize-1 )&7);
-    memcpy(&iv[1], ccm_param->nonce, ccm_param->ulNonceSize); // ~12 bytes
-
+ clear:
+    memset(iv, 0, len);
 }
 
 
@@ -210,9 +264,6 @@ int crypto_mac(crypto_mechanism_t *mech, crypto_data_t *data,
     struct crypto_hash *htfm = NULL;
     struct hash_desc desc;
 
-#if _KERNEL
-    printk("crypto_mac\n");
-#endif
     ASSERT(mech != NULL);
 
     if (mech->cm_type >= NUM_CIPHER_MAP) return CRYPTO_FAILED;
@@ -369,7 +420,7 @@ int crypto_encrypt_aead(crypto_mechanism_t *mech, crypto_data_t *plaintext,
                        key->ck_data,
                        key->ck_length / 8);
 
-    spl_crypto_map_iv(iv, sizeof(iv), mech->cm_param);
+    spl_crypto_map_iv(iv, sizeof(iv), mech);
 
     // If ASYNC is used.
     init_completion(&result.completion);
@@ -378,6 +429,7 @@ int crypto_encrypt_aead(crypto_mechanism_t *mech, crypto_data_t *plaintext,
 
     aead_request_set_crypt(req, linux_plain, linux_cipher, plainlen, iv);
     aead_request_set_assoc(req, NULL, 0);
+
     crypto_aead_setauthsize(tfm, maclen);
 
 #ifdef ZFS_CRYPTO_VERBOSE
@@ -536,7 +588,7 @@ int crypto_decrypt_aead(crypto_mechanism_t *mech, crypto_data_t *ciphertext,
                        key->ck_data,
                        key->ck_length / 8);
 
-    spl_crypto_map_iv(iv, sizeof(iv), mech->cm_param);
+    spl_crypto_map_iv(iv, sizeof(iv), mech);
 
     // If ASYNC is used.
     init_completion(&result.completion);
@@ -545,6 +597,7 @@ int crypto_decrypt_aead(crypto_mechanism_t *mech, crypto_data_t *ciphertext,
 
     aead_request_set_crypt(req, linux_cipher, linux_plain, cryptlen, iv);
     aead_request_set_assoc(req, NULL, 0);
+
     crypto_aead_setauthsize(tfm, maclen);
 
 #ifdef ZFS_CRYPTO_VERBOSE
@@ -726,7 +779,7 @@ int crypto_encrypt_blk(crypto_mechanism_t *mech, crypto_data_t *plaintext,
                              key->ck_data,
                              key->ck_length / 8);
 
-    spl_crypto_map_iv(iv, sizeof(iv), mech->cm_param);
+    spl_crypto_map_iv(iv, sizeof(iv), mech);
 
 #ifdef ZFS_CRYPTO_VERBOSE
     printk("spl-crypto: calling encrypt(0x%04lx)\n", plainlen);
@@ -876,7 +929,7 @@ int crypto_decrypt_blk(crypto_mechanism_t *mech, crypto_data_t *ciphertext,
                              key->ck_data,
                              key->ck_length / 8);
 
-    spl_crypto_map_iv(iv, sizeof(iv), mech->cm_param);
+    spl_crypto_map_iv(iv, sizeof(iv), mech);
 
 
 #ifdef ZFS_CRYPTO_VERBOSE
@@ -953,13 +1006,19 @@ int crypto_encrypt(crypto_mechanism_t *mech, crypto_data_t *plaintext,
     if (mech->cm_type >= NUM_CIPHER_MAP) return CRYPTO_FAILED;
     cm = &cipher_map[ mech->cm_type ];
 
-    if (cm->type == CIPHER_TYPE_AEAD)
+    switch(cm->type) {
+    case CIPHER_TYPE_AEAD:
         return crypto_encrypt_aead(mech, plaintext, key, tmpl,
                                    ciphertext, cr);
 
-    if (cm->type == CIPHER_TYPE_BLK)
+    case CIPHER_TYPE_BLK:
         return crypto_encrypt_blk(mech, plaintext, key, tmpl,
                                   ciphertext, cr);
+
+    case CIPHER_TYPE_MAC:
+        return crypto_mac(mech, plaintext, key, tmpl,
+                          ciphertext, cr);
+    }
 
     return CRYPTO_FAILED;
 }
@@ -973,13 +1032,19 @@ int crypto_decrypt(crypto_mechanism_t *mech, crypto_data_t *ciphertext,
     if (mech->cm_type >= NUM_CIPHER_MAP) return CRYPTO_FAILED;
     cm = &cipher_map[ mech->cm_type ];
 
-    if (cm->type == CIPHER_TYPE_AEAD)
+    switch(cm->type) {
+    case CIPHER_TYPE_AEAD:
         return crypto_decrypt_aead(mech, ciphertext, key, tmpl,
                                    plaintext, cr);
 
-    if (cm->type == CIPHER_TYPE_BLK)
+    case CIPHER_TYPE_BLK:
         return crypto_decrypt_blk(mech, ciphertext, key, tmpl,
                                   plaintext, cr);
+
+    case CIPHER_TYPE_MAC:
+        return crypto_mac(mech, plaintext, key, tmpl,
+                          ciphertext, cr);
+    }
 
     return CRYPTO_FAILED;
 }
