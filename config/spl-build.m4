@@ -82,6 +82,7 @@ AC_DEFUN([SPL_AC_CONFIG_KERNEL], [
 	SPL_AC_KERN_PATH_PARENT_HEADER
 	SPL_AC_KERN_PATH_PARENT_SYMBOL
 	SPL_AC_KERN_PATH_LOCKED
+	SPL_AC_CONFIG_KALLSYMS
 	SPL_AC_CONFIG_ZLIB_INFLATE
 	SPL_AC_CONFIG_ZLIB_DEFLATE
 	SPL_AC_2ARGS_ZLIB_DEFLATE_WORKSPACESIZE
@@ -776,7 +777,7 @@ AC_DEFUN([SPL_AC_ATOMIC_SPINLOCK], [
 		[enable_atomic_spinlocks=check])
 
 	SPL_LINUX_TRY_COMPILE([
-		#include <asm/atomic.h>
+		#include <linux/fs.h>
 	],[
 		atomic64_t *ptr __attribute__ ((unused));
 	],[
@@ -819,8 +820,7 @@ dnl #
 AC_DEFUN([SPL_AC_TYPE_ATOMIC64_CMPXCHG],
 	[AC_MSG_CHECKING([whether kernel defines atomic64_cmpxchg])
 	SPL_LINUX_TRY_COMPILE([
-		#include <asm/atomic.h>
-		#include <asm/system.h>
+		#include <linux/fs.h>
 	],[
 		atomic64_cmpxchg((atomic64_t *)NULL, 0, 0);
 	],[
@@ -839,7 +839,7 @@ dnl #
 AC_DEFUN([SPL_AC_TYPE_ATOMIC64_XCHG],
 	[AC_MSG_CHECKING([whether kernel defines atomic64_xchg])
 	SPL_LINUX_TRY_COMPILE([
-		#include <asm/atomic.h>
+		#include <linux/fs.h>
 	],[
 		atomic64_xchg((atomic64_t *)NULL, 0);
 	],[
@@ -1269,6 +1269,7 @@ AC_DEFUN([SPL_AC_MUTEX_OWNER_TASK_STRUCT], [
 	EXTRA_KCFLAGS="-Werror"
 	SPL_LINUX_TRY_COMPILE([
 		#include <linux/mutex.h>
+		#include <linux/sched.h>
 	],[
 		struct mutex mtx __attribute__ ((unused));
 		mtx.owner = current;
@@ -2127,6 +2128,26 @@ AC_DEFUN([SPL_AC_KERN_PATH_LOCKED], [
 		[AC_DEFINE(HAVE_KERN_PATH_LOCKED, 1,
 		[kern_path_locked() is available])],
 		[])
+])
+
+dnl #
+dnl # /proc/kallsyms support,
+dnl # Verify the kernel has CONFIG_KALLSYMS support enabled.
+dnl #
+AC_DEFUN([SPL_AC_CONFIG_KALLSYMS], [
+	AC_MSG_CHECKING([whether CONFIG_KALLSYMS is defined])
+	SPL_LINUX_TRY_COMPILE([
+		#if !defined(CONFIG_KALLSYMS)
+		#error CONFIG_KALLSYMS not defined
+		#endif
+	],[ ],[
+		AC_MSG_RESULT([yes])
+	],[
+		AC_MSG_RESULT([no])
+		AC_MSG_ERROR([
+	*** This kernel does not include the required kallsyms support.
+	*** Rebuild the kernel with CONFIG_KALLSYMS=y set.])
+	])
 ])
 
 dnl #
