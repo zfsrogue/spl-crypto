@@ -67,6 +67,7 @@ AC_CONFIG_FILES([
 	include/sys/fm/Makefile
 	include/sys/fs/Makefile
 	include/sys/sysevent/Makefile
+	include/sys/crypto/Makefile
 	include/util/Makefile
 	include/vm/Makefile
 	scripts/Makefile
