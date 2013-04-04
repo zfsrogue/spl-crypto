@@ -63,7 +63,7 @@ AC_DEFUN([SPL_AC_CONFIG_KERNEL], [
 	SPL_AC_GET_ZONE_COUNTS
 	SPL_AC_USER_PATH_DIR
 	SPL_AC_SET_FS_PWD
-	SPL_AC_2ARGS_SET_FS_PWD
+	SPL_AC_SET_FS_PWD_WITH_CONST
 	SPL_AC_2ARGS_VFS_UNLINK
 	SPL_AC_4ARGS_VFS_RENAME
 	SPL_AC_VFS_FSYNC
@@ -88,6 +88,8 @@ AC_DEFUN([SPL_AC_CONFIG_KERNEL], [
 	SPL_AC_2ARGS_ZLIB_DEFLATE_WORKSPACESIZE
 	SPL_AC_SHRINK_CONTROL_STRUCT
 	SPL_AC_RWSEM_SPINLOCK_IS_RAW
+	SPL_AC_SCHED_RT_HEADER
+	SPL_AC_2ARGS_VFS_GETATTR
 ])
 
 AC_DEFUN([SPL_AC_MODULE_SYMVERS], [
@@ -103,7 +105,7 @@ AC_DEFUN([SPL_AC_MODULE_SYMVERS], [
 		if ! test -f "$LINUX_OBJ/$LINUX_SYMBOLS"; then
 			AC_MSG_ERROR([
 	*** Please make sure the kernel devel package for your distribution
-	*** is installed.  If your building with a custom kernel make sure the
+	*** is installed.  If you are building with a custom kernel, make sure the
 	*** kernel is configured, built, and the '--with-linux=PATH' configure
 	*** option refers to the location of the kernel source.])
 		fi
@@ -154,7 +156,7 @@ AC_DEFUN([SPL_AC_KERNEL], [
 	if test ! -d "$kernelsrc"; then
 		AC_MSG_ERROR([
 	*** Please make sure the kernel devel package for your distribution
-	*** is installed then try again.  If that fails you can specify the
+	*** is installed and then try again.  If that fails, you can specify the
 	*** location of the kernel source with the '--with-linux=PATH' option.])
 	fi
 
@@ -227,8 +229,13 @@ AC_DEFUN([SPL_AC_CONFIG_USER], [])
 
 dnl #
 dnl # Check for rpm+rpmbuild to build RPM packages.  If these tools
-dnl # are missing it is non-fatal but you will not be able to build
+dnl # are missing, it is non-fatal, but you will not be able to build
 dnl # RPM packages and will be warned if you try too.
+dnl #
+dnl # By default, the generic spec file will be used because it requires
+dnl # minimal dependencies.  Distribution specific spec files can be
+dnl # placed under the 'rpm/<distribution>' directory and enabled using
+dnl # the --with-spec=<distribution> configure option.
 dnl #
 AC_DEFUN([SPL_AC_RPM], [
 	RPM=rpm
@@ -254,6 +261,25 @@ AC_DEFUN([SPL_AC_RPM], [
 		AC_MSG_RESULT([$HAVE_RPMBUILD])
 	])
 
+	RPM_DEFINE_COMMON='--define "$(DEBUG_SPL) 1" --define "$(DEBUG_LOG) 1" --define "$(DEBUG_KMEM) 1" --define "$(DEBUG_KMEM_TRACKING) 1"'
+	RPM_DEFINE_UTIL=
+	RPM_DEFINE_KMOD='--define "kernels $(LINUX_VERSION)"'
+	RPM_DEFINE_DKMS=
+
+	SRPM_DEFINE_COMMON='--define "build_src_rpm 1"'
+	SRPM_DEFINE_UTIL=
+	SRPM_DEFINE_KMOD=
+	SRPM_DEFINE_DKMS=
+
+	RPM_SPEC_DIR="rpm/generic"
+	AC_ARG_WITH([spec],
+		AS_HELP_STRING([--with-spec=SPEC],
+		[Spec files 'generic|fedora']),
+		[RPM_SPEC_DIR="rpm/$withval"])
+
+	AC_MSG_CHECKING([whether spec files are available])
+	AC_MSG_RESULT([yes ($RPM_SPEC_DIR/*.spec.in)])
+
 	AC_SUBST(HAVE_RPM)
 	AC_SUBST(RPM)
 	AC_SUBST(RPM_VERSION)
@@ -261,6 +287,16 @@ AC_DEFUN([SPL_AC_RPM], [
 	AC_SUBST(HAVE_RPMBUILD)
 	AC_SUBST(RPMBUILD)
 	AC_SUBST(RPMBUILD_VERSION)
+
+	AC_SUBST(RPM_SPEC_DIR)
+	AC_SUBST(RPM_DEFINE_UTIL)
+	AC_SUBST(RPM_DEFINE_KMOD)
+	AC_SUBST(RPM_DEFINE_DKMS)
+	AC_SUBST(RPM_DEFINE_COMMON)
+	AC_SUBST(SRPM_DEFINE_UTIL)
+	AC_SUBST(SRPM_DEFINE_KMOD)
+	AC_SUBST(SRPM_DEFINE_DKMS)
+	AC_SUBST(SRPM_DEFINE_COMMON)
 ])
 
 dnl #
@@ -300,48 +336,6 @@ AC_DEFUN([SPL_AC_DPKG], [
 	AC_SUBST(HAVE_DPKGBUILD)
 	AC_SUBST(DPKGBUILD)
 	AC_SUBST(DPKGBUILD_VERSION)
-])
-
-dnl #
-dnl # Check for pacman+makepkg to build Arch Linux packages.  If these
-dnl # tools are missing it is non-fatal but you will not be able to
-dnl # build Arch Linux packages and will be warned if you try too.
-dnl #
-AC_DEFUN([SPL_AC_PACMAN], [
-	PACMAN=pacman
-	MAKEPKG=makepkg
-
-	AC_MSG_CHECKING([whether $PACMAN is available])
-	tmp=$($PACMAN --version 2>/dev/null)
-	AS_IF([test -n "$tmp"], [
-		PACMAN_VERSION=$(echo $tmp |
-		                 $AWK '/Pacman/ { print $[3] }' |
-		                 $SED 's/^v//')
-		HAVE_PACMAN=yes
-		AC_MSG_RESULT([$HAVE_PACMAN ($PACMAN_VERSION)])
-	],[
-		HAVE_PACMAN=no
-		AC_MSG_RESULT([$HAVE_PACMAN])
-	])
-
-	AC_MSG_CHECKING([whether $MAKEPKG is available])
-	tmp=$($MAKEPKG --version 2>/dev/null)
-	AS_IF([test -n "$tmp"], [
-		MAKEPKG_VERSION=$(echo $tmp | $AWK '/makepkg/ { print $[3] }')
-		HAVE_MAKEPKG=yes
-		AC_MSG_RESULT([$HAVE_MAKEPKG ($MAKEPKG_VERSION)])
-	],[
-		HAVE_MAKEPKG=no
-		AC_MSG_RESULT([$HAVE_MAKEPKG])
-	])
-
-	AC_SUBST(HAVE_PACMAN)
-	AC_SUBST(PACMAN)
-	AC_SUBST(PACMAN_VERSION)
-
-	AC_SUBST(HAVE_MAKEPKG)
-	AC_SUBST(MAKEPKG)
-	AC_SUBST(MAKEPKG_VERSION)
 ])
 
 dnl #
@@ -406,7 +400,7 @@ AC_DEFUN([SPL_AC_DEFAULT_PACKAGE], [
 		redhat)     DEFAULT_PACKAGE=rpm  ;;
 		fedora)     DEFAULT_PACKAGE=rpm  ;;
 		gentoo)     DEFAULT_PACKAGE=tgz  ;;
-		arch)       DEFAULT_PACKAGE=arch ;;
+		arch)       DEFAULT_PACKAGE=tgz  ;;
 		sles)       DEFAULT_PACKAGE=rpm  ;;
 		slackware)  DEFAULT_PACKAGE=tgz  ;;
 		lunar)      DEFAULT_PACKAGE=tgz  ;;
@@ -427,8 +421,6 @@ AC_DEFUN([SPL_AC_PACKAGE], [
 	SPL_AC_RPM
 	SPL_AC_DPKG
 	SPL_AC_ALIEN
-
-	AS_IF([test "$VENDOR" = "arch"], [SPL_AC_PACMAN])
 ])
 
 AC_DEFUN([SPL_AC_LICENSE], [
@@ -1714,23 +1706,43 @@ AC_DEFUN([SPL_AC_SET_FS_PWD],
 ])
 
 dnl #
-dnl # 2.6.25 API change,
-dnl # Simplied API by replacing mnt+dentry args with a single path arg.
+dnl # 3.9 API change
+dnl # set_fs_pwd takes const struct path *
 dnl #
-AC_DEFUN([SPL_AC_2ARGS_SET_FS_PWD],
-	[AC_MSG_CHECKING([whether set_fs_pwd() wants 2 args])
+AC_DEFUN([SPL_AC_SET_FS_PWD_WITH_CONST],
+	tmp_flags="$EXTRA_KCFLAGS"
+	EXTRA_KCFLAGS="-Werror"
+	[AC_MSG_CHECKING([whether set_fs_pwd() requires const struct path *])
 	SPL_LINUX_TRY_COMPILE([
-		#include <linux/sched.h>
+		#include <linux/spinlock.h>
 		#include <linux/fs_struct.h>
+		#include <linux/path.h>
+		void (*const set_fs_pwd_func)
+			(struct fs_struct *, const struct path *)
+			= set_fs_pwd;
 	],[
-		set_fs_pwd(NULL, NULL);
+		return 0;
 	],[
 		AC_MSG_RESULT(yes)
-		AC_DEFINE(HAVE_2ARGS_SET_FS_PWD, 1,
-		          [set_fs_pwd() wants 2 args])
+		AC_DEFINE(HAVE_SET_FS_PWD_WITH_CONST, 1,
+			[set_fs_pwd() needs const path *])
 	],[
-		AC_MSG_RESULT(no)
+		SPL_LINUX_TRY_COMPILE([
+			#include <linux/spinlock.h>
+			#include <linux/fs_struct.h>
+			#include <linux/path.h>
+			void (*const set_fs_pwd_func)
+				(struct fs_struct *, struct path *)
+				= set_fs_pwd;
+		],[
+			return 0;
+		],[
+			AC_MSG_RESULT(no)
+		],[
+			AC_MSG_ERROR(unknown)
+		])
 	])
+	EXTRA_KCFLAGS="$tmp_flags"
 ])
 
 dnl #
@@ -2260,4 +2272,54 @@ AC_DEFUN([SPL_AC_RWSEM_SPINLOCK_IS_RAW], [
 		AC_MSG_RESULT(no)
 	])
 	EXTRA_KCFLAGS="$tmp_flags"
+])
+
+dnl #
+dnl # 3.9 API change,
+dnl # Moved things from linux/sched.h to linux/sched/rt.h
+dnl #
+AC_DEFUN([SPL_AC_SCHED_RT_HEADER],
+	[AC_MSG_CHECKING([whether header linux/sched/rt.h exists])
+	SPL_LINUX_TRY_COMPILE([
+		#include <linux/sched.h>
+		#include <linux/sched/rt.h>
+	],[
+		return 0;
+	],[
+		AC_DEFINE(HAVE_SCHED_RT_HEADER, 1, [linux/sched/rt.h exists])
+		AC_MSG_RESULT(yes)
+	],[
+		AC_MSG_RESULT(no)
+	])
+])
+
+dnl #
+dnl # 3.9 API change,
+dnl # vfs_getattr() uses 2 args
+dnl # It takes struct path * instead of struct vfsmount * and struct dentry *
+dnl #
+AC_DEFUN([SPL_AC_2ARGS_VFS_GETATTR], [
+	AC_MSG_CHECKING([whether vfs_getattr() wants])
+	SPL_LINUX_TRY_COMPILE([
+		#include <linux/fs.h>
+	],[
+		vfs_getattr((struct path *) NULL,
+			(struct kstat *)NULL);
+	],[
+		AC_MSG_RESULT(2 args)
+		AC_DEFINE(HAVE_2ARGS_VFS_GETATTR, 1,
+		          [vfs_getattr wants 2 args])
+	],[
+		SPL_LINUX_TRY_COMPILE([
+			#include <linux/fs.h>
+		],[
+			vfs_getattr((struct vfsmount *)NULL,
+				(struct dentry *)NULL,
+				(struct kstat *)NULL);
+		],[
+			AC_MSG_RESULT(3 args)
+		],[
+			AC_MSG_ERROR(unknown)
+		])
+	])
 ])

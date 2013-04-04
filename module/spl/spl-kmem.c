@@ -6,7 +6,7 @@
  *  UCRL-CODE-235197
  *
  *  This file is part of the SPL, Solaris Porting Layer.
- *  For details, see <http://github.com/behlendorf/spl/>.
+ *  For details, see <http://zfsonlinux.org/>.
  *
  *  The SPL is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -404,7 +404,8 @@ kmem_del_init(spinlock_t *lock, struct hlist_head *table, int bits, const void *
 	spin_lock_irqsave(lock, flags);
 
 	head = &table[hash_ptr(addr, bits)];
-	hlist_for_each_entry_rcu(p, node, head, kd_hlist) {
+	hlist_for_each_rcu(node, head) {
+		p = list_entry_rcu(node, struct kmem_debug, kd_hlist);
 		if (p->kd_addr == addr) {
 			hlist_del_init(&p->kd_hlist);
 			list_del_init(&p->kd_list);
@@ -1111,14 +1112,11 @@ spl_slab_reclaim(spl_kmem_cache_t *skc, int count, int flag)
 
 		if (skc->skc_flags & KMC_OFFSLAB)
 			kv_free(skc, sko->sko_addr, size);
-
-		cond_resched();
 	}
 
 	list_for_each_entry_safe(sks, m, &sks_list, sks_list) {
 		ASSERT(sks->sks_magic == SKS_MAGIC);
 		kv_free(skc, sks, skc->skc_slab_size);
-		cond_resched();
 	}
 
 	SEXIT;

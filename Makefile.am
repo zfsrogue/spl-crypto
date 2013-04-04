@@ -1,21 +1,27 @@
+
+ACLOCAL_AMFLAGS = -I config
+
 include $(top_srcdir)/config/rpm.am
 include $(top_srcdir)/config/deb.am
 include $(top_srcdir)/config/tgz.am
-include $(top_srcdir)/config/arch.am
 
-SUBDIRS =
+SUBDIRS = include rpm
 if CONFIG_USER
-SUBDIRS += lib cmd scripts
+SUBDIRS += lib cmd man scripts
 endif
 if CONFIG_KERNEL
-SUBDIRS += module include
+SUBDIRS += module
+
+extradir = /usr/src/spl-$(VERSION)
+extra_HEADERS = spl.release.in spl_config.h.in
+
+kerneldir = /usr/src/spl-$(VERSION)/$(LINUX_VERSION)
+nodist_kernel_HEADERS = spl.release spl_config.h module/$(LINUX_SYMBOLS)
 endif
 
 AUTOMAKE_OPTIONS = foreign
-EXTRA_DIST  = autogen.sh spl.spec.in spl-modules.spec.in META DISCLAIMER
+EXTRA_DIST  = autogen.sh META DISCLAIMER copy-builtin
 EXTRA_DIST += config/config.awk config/rpm.am config/deb.am config/tgz.am
-EXTRA_DIST += dkms.postinst copy-builtin
-noinst_HEADERS = spl_config.h spl.release
 
 distclean-local::
 	-$(RM) -R autom4te*.cache
@@ -29,14 +35,9 @@ distclean-local::
 		-o -name '*.order' -o -name '*.markers' \) \
 		-type f -print | xargs $(RM)
 
-if CONFIG_KERNEL
-install-data-local:
-	release=$(SPL_META_VERSION)-$(SPL_META_RELEASE); \
-	instdest=$(DESTDIR)/usr/src/spl-$$release/$(LINUX_VERSION); \
-	for instfile in $(noinst_HEADERS) module/$(LINUX_SYMBOLS); do \
-		$(INSTALL) -D $$instfile $$instdest/$$instfile; \
-	done
-endif
+dist-hook:
+	sed -i 's/Release:[[:print:]]*/Release:      $(RELEASE)/' \
+		$(distdir)/META
 
 ctags:
 	$(RM) $(top_srcdir)/tags
@@ -49,5 +50,5 @@ etags:
 tags: ctags etags
 
 pkg: @DEFAULT_PACKAGE@
-pkg-modules: @DEFAULT_PACKAGE@-modules
+pkg-kmod: @DEFAULT_PACKAGE@-kmod
 pkg-utils: @DEFAULT_PACKAGE@-utils

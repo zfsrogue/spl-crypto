@@ -14,20 +14,13 @@
 # Normal rules
 #
 *.[oa]
-*.ko
-*.ko.unsigned
-*.ko.out
-*.ko.out.sig
 *.lo
 *.la
-*.mod.c
 *~
 *.swp
-.*.cmd
 .deps
 .libs
 .DS_Store
-modules.order
 Makefile
 Makefile.in
 
@@ -40,12 +33,7 @@ Makefile.in
 /libtool
 /spl_config.h
 /spl_config.h.in
-/spl.spec
-/spl-modules.spec
 /spl.release
-/dkms.conf
-/PKGBUILD-spl
-/PKGBUILD-spl-modules
 /stamp-h1
 /aclocal.m4
 /autom4te.cache

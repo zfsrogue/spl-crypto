@@ -8,7 +8,7 @@
 # UCRL-CODE-235197
 #
 # This file is part of the SPL, Solaris Porting Layer.
-# For details, see <http://github.com/behlendorf/spl/>.
+# For details, see <http://zfsonlinux.org/>.
 #
 # The SPL is free software; you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by the
@@ -28,9 +28,10 @@ AC_INIT
 AC_LANG(C)
 SPL_AC_META
 AC_CONFIG_AUX_DIR([config])
+AC_CONFIG_MACRO_DIR([config])
 AC_CANONICAL_SYSTEM
 AM_MAINTAINER_MODE
-AM_SILENT_RULES
+m4_ifdef([AM_SILENT_RULES], [AM_SILENT_RULES([yes])])
 AM_INIT_AUTOMAKE([$SPL_META_NAME], [$SPL_META_VERSION])
 AC_CONFIG_HEADERS([spl_config.h], [
 	(mv spl_config.h spl_config.h.tmp &&
@@ -47,6 +48,8 @@ SPL_AC_CONFIG
 
 AC_CONFIG_FILES([
 	Makefile
+	man/Makefile
+	man/man1/Makefile
 	lib/Makefile
 	cmd/Makefile
 	module/Makefile
@@ -56,13 +59,27 @@ AC_CONFIG_FILES([
 	module/sun-ccm/Makefile
 	module/sun-gcm/Makefile
 	include/Makefile
+	include/fs/Makefile
+	include/linux/Makefile
+	include/rpc/Makefile
+	include/sharefs/Makefile
+	include/sys/Makefile
+	include/sys/fm/Makefile
+	include/sys/fs/Makefile
+	include/sys/sysevent/Makefile
+	include/util/Makefile
+	include/vm/Makefile
 	scripts/Makefile
-	spl.spec
-	spl-modules.spec
-	PKGBUILD-spl
-	PKGBUILD-spl-modules
+	rpm/Makefile
+	rpm/fedora/Makefile
+	rpm/fedora/spl.spec
+	rpm/fedora/spl-kmod.spec
+	rpm/fedora/spl-dkms.spec
+	rpm/generic/Makefile
+	rpm/generic/spl.spec
+	rpm/generic/spl-kmod.spec
+	rpm/generic/spl-dkms.spec
 	spl.release
-	dkms.conf
 ])
 
 AC_OUTPUT
