@@ -1,5 +1,5 @@
 /*****************************************************************************\
- *  Copyright (C) 2007-2010 Lawrence Livermore National Security, LLC.
+ *  Copyright (C) 2007-2014 Lawrence Livermore National Security, LLC.
  *  Copyright (C) 2007 The Regents of the University of California.
  *  Produced at Lawrence Livermore National Laboratory (cf, DISCLAIMER).
  *  Written by Brian Behlendorf <behlendorf1@llnl.gov>.
@@ -22,15 +22,24 @@
  *  with the SPL.  If not, see <http://www.gnu.org/licenses/>.
 \*****************************************************************************/
 
-#ifndef _SPL_SYSTEMINFO_H
-#define _SPL_SYSTEMINFO_H
+#ifndef _SPL_WAIT_COMPAT_H
+#define _SPL_WAIT_COMPAT_H
 
-#define HW_HOSTID_LEN		11		/* minimum buffer size needed */
-						/* to hold a decimal or hex */
-						/* hostid string */
 
-/* Supplemental definitions for Linux. */
-#define HW_HOSTID_PATH		"/etc/hostid"   /* binary configuration file */
-#define HW_HOSTID_MASK		0xFFFFFFFF 	/* significant hostid bits */
+#ifndef HAVE_WAIT_ON_BIT_ACTION
+#  define spl_wait_on_bit(word, bit, mode) wait_on_bit(word, bit, mode)
+#else
 
-#endif /* SPL_SYSTEMINFO_H */
+static inline int
+spl_bit_wait(void *word)
+{
+        schedule();
+        return 0;
+}
+
+#define spl_wait_on_bit(word, bit, mode)			\
+	wait_on_bit(word, bit, spl_bit_wait, mode)
+
+#endif /* HAVE_WAIT_ON_BIT_ACTION */
+
+#endif /* SPL_WAIT_COMPAT_H */

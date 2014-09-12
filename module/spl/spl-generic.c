@@ -52,13 +52,10 @@
 char spl_version[32] = "SPL v" SPL_META_VERSION "-" SPL_META_RELEASE;
 EXPORT_SYMBOL(spl_version);
 
-unsigned long spl_hostid = HW_INVALID_HOSTID;
+unsigned long spl_hostid = 0;
 EXPORT_SYMBOL(spl_hostid);
 module_param(spl_hostid, ulong, 0644);
 MODULE_PARM_DESC(spl_hostid, "The system hostid.");
-
-char hw_serial[HW_HOSTID_LEN] = "<none>";
-EXPORT_SYMBOL(hw_serial);
 
 proc_t p0 = { 0 };
 EXPORT_SYMBOL(p0);
@@ -99,6 +96,36 @@ highbit(unsigned long i)
         SRETURN(h);
 }
 EXPORT_SYMBOL(highbit);
+
+int
+highbit64(uint64_t i)
+{
+        register int h = 1;
+        SENTRY;
+
+        if (i == 0)
+                SRETURN(0);
+        if (i & 0xffffffff00000000ull) {
+                h += 32; i >>= 32;
+        }
+        if (i & 0xffff0000) {
+                h += 16; i >>= 16;
+        }
+        if (i & 0xff00) {
+                h += 8; i >>= 8;
+        }
+        if (i & 0xf0) {
+                h += 4; i >>= 4;
+        }
+        if (i & 0xc) {
+                h += 2; i >>= 2;
+        }
+        if (i & 0x2) {
+                h += 1;
+        }
+        SRETURN(h);
+}
+EXPORT_SYMBOL(highbit64);
 
 #if BITS_PER_LONG == 32
 /*
@@ -467,7 +494,7 @@ hostid_read(void)
 	int result;
 	uint64_t size;
 	struct _buf *file;
-	unsigned long hostid = 0;
+	uint32_t hostid = 0;
 
 	file = kobj_open_file(spl_hostid_path);
 
@@ -511,45 +538,10 @@ hostid_read(void)
 	return 0;
 }
 
-#define GET_HOSTID_CMD \
-	"exec 0</dev/null " \
-	"     1>/proc/sys/kernel/spl/hostid " \
-	"     2>/dev/null; " \
-	"hostid"
-
-static int
-hostid_exec(void)
-{
-	char *argv[] = { "/bin/sh",
-	                 "-c",
-	                 GET_HOSTID_CMD,
-	                 NULL };
-	char *envp[] = { "HOME=/",
-	                 "TERM=linux",
-	                 "PATH=/sbin:/usr/sbin:/bin:/usr/bin",
-	                 NULL };
-	int rc;
-
-	/* Doing address resolution in the kernel is tricky and just
-	 * not a good idea in general.  So to set the proper 'hw_serial'
-	 * use the usermodehelper support to ask '/bin/sh' to run
-	 * '/usr/bin/hostid' and redirect the result to /proc/sys/spl/hostid
-	 * for us to use.  It's a horrific solution but it will do for now.
-	 */
-	rc = call_usermodehelper(argv[0], argv, envp, UMH_WAIT_PROC);
-	if (rc)
-		printk("SPL: Failed user helper '%s %s %s', rc = %d\n",
-		       argv[0], argv[1], argv[2], rc);
-
-	return rc;
-}
-
 uint32_t
 zone_get_hostid(void *zone)
 {
 	static int first = 1;
-	unsigned long hostid;
-	int rc;
 
 	/* Only the global zone is supported */
 	ASSERT(zone == NULL);
@@ -559,21 +551,16 @@ zone_get_hostid(void *zone)
 
 		/*
 		 * Get the hostid if it was not passed as a module parameter.
-		 * Try reading the /etc/hostid file directly, and then fall
-		 * back to calling the /usr/bin/hostid utility.
+		 * Try reading the /etc/hostid file directly.
 		 */
-		if ((spl_hostid == HW_INVALID_HOSTID) &&
-		    (rc = hostid_read()) && (rc = hostid_exec()))
-			return HW_INVALID_HOSTID;
+		if (hostid_read())
+			spl_hostid = 0;
 
 		printk(KERN_NOTICE "SPL: using hostid 0x%08x\n",
 			(unsigned int) spl_hostid);
 	}
 
-	if (ddi_strtoul(hw_serial, NULL, HW_HOSTID_LEN-1, &hostid) != 0)
-		return HW_INVALID_HOSTID;
-
-	return (uint32_t)hostid;
+	return spl_hostid;
 }
 EXPORT_SYMBOL(zone_get_hostid);
 
@@ -677,9 +664,6 @@ __init spl_init(void)
 	if ((rc = spl_kmem_init_kallsyms_lookup()))
 		SGOTO(out10, rc);
 
-	if ((rc = spl_vn_init_kallsyms_lookup()))
-		SGOTO(out10, rc);
-
 	printk(KERN_NOTICE "SPL: Loaded module v%s-%s%s\n", SPL_META_VERSION,
 	       SPL_META_RELEASE, SPL_DEBUG_STR);
 	SRETURN(rc);
@@ -759,3 +743,4 @@ module_exit(spl_fini);
 MODULE_AUTHOR("Lawrence Livermore National Labs");
 MODULE_DESCRIPTION("Solaris Porting Layer");
 MODULE_LICENSE("GPL");
+MODULE_VERSION(SPL_META_VERSION "-" SPL_META_RELEASE);

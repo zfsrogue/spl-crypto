@@ -28,7 +28,6 @@ AC_DEFUN([SPL_AC_CONFIG_KERNEL], [
 	SPL_AC_TYPE_UINTPTR_T
 	SPL_AC_2ARGS_REGISTER_SYSCTL
 	SPL_AC_SHRINKER_CALLBACK
-	SPL_AC_PATH_IN_NAMEIDATA
 	SPL_AC_TASK_CURR
 	SPL_AC_CTL_UNNUMBERED
 	SPL_AC_CTL_NAME
@@ -81,9 +80,7 @@ AC_DEFUN([SPL_AC_CONFIG_KERNEL], [
 	SPL_AC_KERNEL_FALLOCATE
 	SPL_AC_SHRINK_DCACHE_MEMORY
 	SPL_AC_SHRINK_ICACHE_MEMORY
-	SPL_AC_KERN_PATH_PARENT_HEADER
-	SPL_AC_KERN_PATH_PARENT_SYMBOL
-	SPL_AC_KERN_PATH_LOCKED
+	SPL_AC_KERN_PATH
 	SPL_AC_CONFIG_KALLSYMS
 	SPL_AC_CONFIG_ZLIB_INFLATE
 	SPL_AC_CONFIG_ZLIB_DEFLATE
@@ -93,6 +90,8 @@ AC_DEFUN([SPL_AC_CONFIG_KERNEL], [
 	SPL_AC_SCHED_RT_HEADER
 	SPL_AC_2ARGS_VFS_GETATTR
 	SPL_AC_USLEEP_RANGE
+	SPL_AC_KMEM_CACHE_ALLOCFLAGS
+	SPL_AC_WAIT_ON_BIT
 ])
 
 AC_DEFUN([SPL_AC_MODULE_SYMVERS], [
@@ -989,28 +988,6 @@ AC_DEFUN([SPL_AC_SHRINKER_CALLBACK],[
 ])
 
 dnl #
-dnl # 2.6.25 API change,
-dnl # struct path entry added to struct nameidata
-dnl #
-AC_DEFUN([SPL_AC_PATH_IN_NAMEIDATA],
-	[AC_MSG_CHECKING([whether struct path used in struct nameidata])
-	SPL_LINUX_TRY_COMPILE([
-		#include <linux/namei.h>
-	],[
-		struct nameidata nd __attribute__ ((unused));
-
-		nd.path.mnt = NULL;
-		nd.path.dentry = NULL;
-	],[
-		AC_MSG_RESULT(yes)
-		AC_DEFINE(HAVE_PATH_IN_NAMEIDATA, 1,
-		          [struct path used in struct nameidata])
-	],[
-		AC_MSG_RESULT(no)
-	])
-])
-
-dnl #
 dnl # Custom SPL patch may export this system it is not required
 dnl #
 AC_DEFUN([SPL_AC_TASK_CURR],
@@ -1842,41 +1819,94 @@ AC_DEFUN([SPL_AC_SET_FS_PWD_WITH_CONST],
 	EXTRA_KCFLAGS="$tmp_flags"
 ])
 
-dnl #
-dnl # SLES API change, never adopted in mainline,
-dnl # Third 'struct vfsmount *' argument removed.
-dnl #
 AC_DEFUN([SPL_AC_2ARGS_VFS_UNLINK],
 	[AC_MSG_CHECKING([whether vfs_unlink() wants 2 args])
 	SPL_LINUX_TRY_COMPILE([
 		#include <linux/fs.h>
 	],[
-		vfs_unlink(NULL, NULL);
+		vfs_unlink((struct inode *) NULL, (struct dentry *) NULL);
 	],[
 		AC_MSG_RESULT(yes)
 		AC_DEFINE(HAVE_2ARGS_VFS_UNLINK, 1,
 		          [vfs_unlink() wants 2 args])
 	],[
 		AC_MSG_RESULT(no)
+		dnl #
+		dnl # Linux 3.13 API change
+		dnl # Added delegated inode
+		dnl #
+		AC_MSG_CHECKING([whether vfs_unlink() wants 3 args])
+		SPL_LINUX_TRY_COMPILE([
+			#include <linux/fs.h>
+		],[
+			vfs_unlink((struct inode *) NULL,
+				(struct dentry *) NULL,
+				(struct inode **) NULL);
+		],[
+			AC_MSG_RESULT(yes)
+			AC_DEFINE(HAVE_3ARGS_VFS_UNLINK, 1,
+				  [vfs_unlink() wants 3 args])
+		],[
+			AC_MSG_ERROR(no)
+		])
+
 	])
 ])
 
-dnl #
-dnl # SLES API change, never adopted in mainline,
-dnl # Third and sixth 'struct vfsmount *' argument removed.
-dnl #
 AC_DEFUN([SPL_AC_4ARGS_VFS_RENAME],
 	[AC_MSG_CHECKING([whether vfs_rename() wants 4 args])
 	SPL_LINUX_TRY_COMPILE([
 		#include <linux/fs.h>
 	],[
-		vfs_rename(NULL, NULL, NULL, NULL);
+		vfs_rename((struct inode *) NULL, (struct dentry *) NULL,
+			(struct inode *) NULL, (struct dentry *) NULL);
 	],[
 		AC_MSG_RESULT(yes)
 		AC_DEFINE(HAVE_4ARGS_VFS_RENAME, 1,
 		          [vfs_rename() wants 4 args])
 	],[
 		AC_MSG_RESULT(no)
+		dnl #
+		dnl # Linux 3.13 API change
+		dnl # Added delegated inode
+		dnl #
+		AC_MSG_CHECKING([whether vfs_rename() wants 5 args])
+		SPL_LINUX_TRY_COMPILE([
+			#include <linux/fs.h>
+		],[
+			vfs_rename((struct inode *) NULL,
+				(struct dentry *) NULL,
+				(struct inode *) NULL,
+				(struct dentry *) NULL,
+				(struct inode **) NULL);
+		],[
+			AC_MSG_RESULT(yes)
+			AC_DEFINE(HAVE_5ARGS_VFS_RENAME, 1,
+				  [vfs_rename() wants 5 args])
+		],[
+			AC_MSG_RESULT(no)
+			dnl #
+			dnl # Linux 3.15 API change
+			dnl # Added flags
+			dnl #
+			AC_MSG_CHECKING([whether vfs_rename() wants 6 args])
+			SPL_LINUX_TRY_COMPILE([
+				#include <linux/fs.h>
+			],[
+				vfs_rename((struct inode *) NULL,
+					(struct dentry *) NULL,
+					(struct inode *) NULL,
+					(struct dentry *) NULL,
+					(struct inode **) NULL,
+					(unsigned int) 0);
+			],[
+				AC_MSG_RESULT(yes)
+				AC_DEFINE(HAVE_6ARGS_VFS_RENAME, 1,
+					  [vfs_rename() wants 6 args])
+			],[
+				AC_MSG_ERROR(no)
+			])
+		])
 	])
 ])
 
@@ -2224,56 +2254,41 @@ AC_DEFUN([SPL_AC_SHRINK_ICACHE_MEMORY],
 ])
 
 dnl #
-dnl # 2.6.39 API compat,
-dnl # The path_lookup() function has been renamed to kern_path_parent()
-dnl # and the flags argument has been removed.  The only behavior now
-dnl # offered is that of LOOKUP_PARENT.  The spl already always passed
-dnl # this flag so dropping the flag does not impact us.
+dnl # 2.6.28 API change
+dnl # The kern_path() function has been introduced. We adopt it as the new way
+dnl # of looking up paths. When it is not available, we emulate it using the
+dnl # older interfaces.
 dnl #
-AC_DEFUN([SPL_AC_KERN_PATH_PARENT_HEADER], [
-	SPL_CHECK_SYMBOL_HEADER(
-		[kern_path_parent],
-		[int kern_path_parent(const char \*, struct nameidata \*)],
-		[include/linux/namei.h],
-		[AC_DEFINE(HAVE_KERN_PATH_PARENT_HEADER, 1,
-		[kern_path_parent() is available])],
-		[])
-])
-
-dnl #
-dnl # 3.1 API compat,
-dnl # The kern_path_parent() symbol is no longer exported by the kernel.
-dnl # However, it remains the prefered interface and since we still have
-dnl # access to the prototype we dynamically lookup the required address.
-dnl #
-AC_DEFUN([SPL_AC_KERN_PATH_PARENT_SYMBOL],
-	[AC_MSG_CHECKING([whether kern_path_parent() is available])
+AC_DEFUN([SPL_AC_KERN_PATH],
+	[AC_MSG_CHECKING([whether kern_path() is available])
 	SPL_LINUX_TRY_COMPILE_SYMBOL([
 		#include <linux/namei.h>
 	], [
-		kern_path_parent(NULL, NULL);
-	], [kern_path_parent], [fs/namei.c], [
+		int r = kern_path(NULL, 0, NULL);
+	], [kern_path], [fs/namei.c], [
 		AC_MSG_RESULT(yes)
-		AC_DEFINE(HAVE_KERN_PATH_PARENT_SYMBOL, 1,
-		          [kern_path_parent() is available])
+		AC_DEFINE(HAVE_KERN_PATH, 1,
+		          [kern_path() is available])
 	], [
 		AC_MSG_RESULT(no)
-	])
-])
+		AC_MSG_CHECKING([whether path_lookup() is available])
+		SPL_LINUX_TRY_COMPILE_SYMBOL([
+			#include <linux/namei.h>
+		], [
+			int r = path_lookup(NULL, 0, NULL);
+		], [path_lookup], [fs/namei.c], [
+			AC_MSG_RESULT(yes)
+			AC_DEFINE(HAVE_KERN_PATH, 1,
+				  [kern_path() is available])
+		], [
+			AC_MSG_RESULT(no)
+			AC_MSG_ERROR([
+	*** Neither kern_path() nor path_lookup() is available.
+	*** Please file an issue:
+	*** https://github.com/zfsonlinux/spl/issues/new])
 
-dnl #
-dnl # 3.6 API compat,
-dnl # The kern_path_parent() function was replaced by the kern_path_locked()
-dnl # function to eliminate all struct nameidata usage outside fs/namei.c.
-dnl #
-AC_DEFUN([SPL_AC_KERN_PATH_LOCKED], [
-	SPL_CHECK_SYMBOL_HEADER(
-		[kern_path_locked],
-		[struct dentry \*kern_path_locked(const char \*, struct path \*)],
-		[include/linux/namei.h],
-		[AC_DEFINE(HAVE_KERN_PATH_LOCKED, 1,
-		[kern_path_locked() is available])],
-		[])
+		])
+	])
 ])
 
 dnl #
@@ -2475,6 +2490,68 @@ AC_DEFUN([SPL_AC_USLEEP_RANGE], [
 		AC_MSG_RESULT(yes)
 		AC_DEFINE(HAVE_USLEEP_RANGE, 1,
 		          [usleep_range is available])
+	],[
+		AC_MSG_RESULT(no)
+	])
+])
+
+dnl #
+dnl # 2.6.35 API change,
+dnl # The cachep->gfpflags member was renamed cachep->allocflags.  These are
+dnl # private allocation flags which are applied when allocating a new slab
+dnl # in kmem_getpages().  Unfortunately there is no public API for setting
+dnl # non-default flags.
+dnl #
+AC_DEFUN([SPL_AC_KMEM_CACHE_ALLOCFLAGS], [
+	AC_MSG_CHECKING([whether struct kmem_cache has allocflags])
+	SPL_LINUX_TRY_COMPILE([
+		#include <linux/slab.h>
+	],[
+		struct kmem_cache cachep __attribute__ ((unused));
+		cachep.allocflags = GFP_KERNEL;
+	],[
+		AC_MSG_RESULT(yes)
+		AC_DEFINE(HAVE_KMEM_CACHE_ALLOCFLAGS, 1,
+			[struct kmem_cache has allocflags])
+	],[
+		AC_MSG_RESULT(no)
+
+		AC_MSG_CHECKING([whether struct kmem_cache has gfpflags])
+		SPL_LINUX_TRY_COMPILE([
+			#include <linux/slab.h>
+		],[
+			struct kmem_cache cachep __attribute__ ((unused));
+			cachep.gfpflags = GFP_KERNEL;
+		],[
+			AC_MSG_RESULT(yes)
+			AC_DEFINE(HAVE_KMEM_CACHE_GFPFLAGS, 1,
+				[struct kmem_cache has gfpflags])
+		],[
+			AC_MSG_RESULT(no)
+		])
+	])
+])
+
+dnl #
+dnl # 3.17 API change,
+dnl # wait_on_bit() no longer requires an action argument. The former
+dnl # "wait_on_bit" interface required an 'action' function to be provided
+dnl # which does the actual waiting. There were over 20 such functions in the
+dnl # kernel, many of them identical, though most cases can be satisfied by one
+dnl # of just two functions: one which uses io_schedule() and one which just
+dnl # uses schedule().  This API change was made to consolidate all of those
+dnl # redundant wait functions.
+dnl #
+AC_DEFUN([SPL_AC_WAIT_ON_BIT], [
+	AC_MSG_CHECKING([whether wait_on_bit() takes an action])
+	SPL_LINUX_TRY_COMPILE([
+		#include <linux/wait.h>
+	],[
+		int (*action)(void *) = NULL;
+		wait_on_bit(NULL, 0, action, 0);
+	],[
+		AC_MSG_RESULT(yes)
+		AC_DEFINE(HAVE_WAIT_ON_BIT_ACTION, 1, [yes])
 	],[
 		AC_MSG_RESULT(no)
 	])
