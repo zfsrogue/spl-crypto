@@ -35,7 +35,8 @@ typedef enum {
         MUTEX_ADAPTIVE = 2
 } kmutex_type_t;
 
-#if defined(HAVE_MUTEX_OWNER) && defined(CONFIG_SMP) && !defined(CONFIG_DEBUG_MUTEXES)
+#if defined(HAVE_MUTEX_OWNER) && defined(CONFIG_SMP) && \
+    !defined(CONFIG_DEBUG_MUTEXES)
 
 /*
  * We define a 1-field struct rather than a straight typedef to enforce type
@@ -43,6 +44,7 @@ typedef enum {
  */
 typedef struct {
         struct mutex m;
+	spinlock_t m_lock;	/* used for serializing mutex_exit */
 } kmutex_t;
 
 static inline kthread_t *
@@ -69,6 +71,7 @@ mutex_owner(kmutex_t *mp)
         ASSERT(type == MUTEX_DEFAULT);                                  \
                                                                         \
         __mutex_init(&(mp)->m, #mp, &__key);                            \
+	spin_lock_init(&(mp)->m_lock);					\
 })
 
 #undef mutex_destroy
@@ -82,28 +85,40 @@ mutex_owner(kmutex_t *mp)
 ({                                                                      \
         ASSERT3P(mutex_owner(mp), !=, current);				\
         mutex_lock(&(mp)->m);						\
- })
-#define mutex_exit(mp)                  mutex_unlock(&(mp)->m)
-
-#ifdef HAVE_GPL_ONLY_SYMBOLS
-# define mutex_enter_nested(mp, sc)     mutex_lock_nested(&(mp)->m, sc)
-#else
-# define mutex_enter_nested(mp, sc)     mutex_enter(mp)
-#endif /* HAVE_GPL_ONLY_SYMBOLS */
+})
+/*
+ * The reason for the spinlock:
+ *
+ * The Linux mutex is designed with a fast-path/slow-path design such that it
+ * does not guarantee serialization upon itself, allowing a race where latter
+ * acquirers finish mutex_unlock before former ones.
+ *
+ * The race renders it unsafe to be used for serializing the freeing of an
+ * object in which the mutex is embedded, where the latter acquirer could go
+ * on to free the object while the former one is still doing mutex_unlock and
+ * causing memory corruption.
+ *
+ * However, there are many places in ZFS where the mutex is used for
+ * serializing object freeing, and the code is shared among other OSes without
+ * this issue. Thus, we need the spinlock to force the serialization on
+ * mutex_exit().
+ *
+ * See http://lwn.net/Articles/575477/ for the information about the race.
+ */
+#define mutex_exit(mp)							\
+({									\
+	spin_lock(&(mp)->m_lock);					\
+	mutex_unlock(&(mp)->m);						\
+	spin_unlock(&(mp)->m_lock);					\
+})
 
 #else /* HAVE_MUTEX_OWNER */
 
 typedef struct {
         struct mutex m_mutex;
+	spinlock_t m_lock;
         kthread_t *m_owner;
 } kmutex_t;
-
-#ifdef HAVE_TASK_CURR
-extern int spl_mutex_spin_max(void);
-#else /* HAVE_TASK_CURR */
-# define task_curr(owner)       0
-# define spl_mutex_spin_max()   0
-#endif /* HAVE_TASK_CURR */
 
 #define MUTEX(mp)               (&((mp)->m_mutex))
 
@@ -137,6 +152,7 @@ spl_mutex_clear_owner(kmutex_t *mp)
         ASSERT(type == MUTEX_DEFAULT);                                  \
                                                                         \
         __mutex_init(MUTEX(mp), #mp, &__key);                           \
+	spin_lock_init(&(mp)->m_lock);					\
         spl_mutex_clear_owner(mp);                                      \
 })
 
@@ -156,59 +172,20 @@ spl_mutex_clear_owner(kmutex_t *mp)
         _rc_;                                                           \
 })
 
-/*
- * Adaptive mutexs assume that the lock may be held by a task running
- * on a different cpu.  The expectation is that the task will drop the
- * lock before leaving the head of the run queue.  So the ideal thing
- * to do is spin until we acquire the lock and avoid a context switch.
- * However it is also possible the task holding the lock yields the
- * processor with out dropping lock.  In this case, we know it's going
- * to be a while so we stop spinning and go to sleep waiting for the
- * lock to be available.  This should strike the optimum balance
- * between spinning and sleeping waiting for a lock.
- */
 #define mutex_enter(mp)                                                 \
 ({                                                                      \
-        kthread_t *_owner_;                                             \
-        int _rc_, _count_;                                              \
-                                                                        \
-        _rc_ = 0;                                                       \
-        _count_ = 0;                                                    \
-        _owner_ = mutex_owner(mp);                                      \
-        ASSERT3P(_owner_, !=, current);					\
-                                                                        \
-        while (_owner_ && task_curr(_owner_) &&                         \
-               _count_ <= spl_mutex_spin_max()) {                       \
-                if ((_rc_ = mutex_trylock(MUTEX(mp))))                  \
-                        break;                                          \
-                                                                        \
-                _count_++;                                              \
-        }                                                               \
-                                                                        \
-        if (!_rc_)                                                      \
-                mutex_lock(MUTEX(mp));                                  \
-                                                                        \
-        spl_mutex_set_owner(mp);                                        \
+	ASSERT3P(mutex_owner(mp), !=, current);				\
+	mutex_lock(MUTEX(mp));						\
+	spl_mutex_set_owner(mp);                                        \
 })
 
 #define mutex_exit(mp)                                                  \
 ({                                                                      \
+	spin_lock(&(mp)->m_lock);					\
         spl_mutex_clear_owner(mp);                                      \
         mutex_unlock(MUTEX(mp));                                        \
+	spin_unlock(&(mp)->m_lock);					\
 })
-
-#ifdef HAVE_GPL_ONLY_SYMBOLS
-# define mutex_enter_nested(mp, sc)                                     \
-({                                                                      \
-        mutex_lock_nested(MUTEX(mp), sc);                               \
-        spl_mutex_set_owner(mp);                                        \
-})
-#else
-# define mutex_enter_nested(mp, sc)                                     \
-({                                                                      \
-        mutex_enter(mp);                                                \
-})
-#endif
 
 #endif /* HAVE_MUTEX_OWNER */
 
